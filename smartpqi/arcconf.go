@@ -16,24 +16,62 @@ const (
 	noArcConfRC = 127
 )
 
+// parseBlockSize converts a native disk block/sector size token from arcconf
+// output into bytes. Known values are "512" (traditional) and "4K" (4K-native
+// drives). This is not intended for parsing human-readable capacity fields
+// like "SizeMB" which would require int64 for large disks.
+func parseBlockSize(raw string) (int, error) {
+	switch strings.TrimSpace(raw) {
+	case "512":
+		return 512, nil
+	case "4K", "4k", "4096":
+		return 4096, nil
+	default:
+		return 0, fmt.Errorf("unsupported block size value %q", raw)
+	}
+}
+
+// splitLogicalDevices extracts individual logical device text blocks from raw
+// arcconf output that may contain multiple LDs separated by varying amounts
+// of whitespace (real hardware uses single blank lines between LDs).
+func splitLogicalDevices(rawData string) []string {
+	const marker = "Logical Device number"
+	var blocks []string
+
+	remaining := rawData
+	for {
+		idx := strings.Index(remaining, marker)
+		if idx < 0 {
+			break
+		}
+
+		remaining = remaining[idx:]
+
+		nextIdx := strings.Index(remaining[1:], marker)
+		if nextIdx >= 0 {
+			blocks = append(blocks, strings.TrimSpace(remaining[:nextIdx+1]))
+			remaining = remaining[nextIdx+1:]
+		} else {
+			blocks = append(blocks, strings.TrimSpace(remaining))
+			break
+		}
+	}
+
+	return blocks
+}
+
 func parseLogicalDevices(rawData string) ([]LogicalDevice, error) {
 	logDevs := []LogicalDevice{}
 
-	devices := strings.Split(rawData, "\n\n\n")
-	for _, device := range devices {
-		ldStart := strings.Index(device, "Logical Device number")
-		if ldStart >= 0 {
-			ldRawData := strings.TrimSpace(device[ldStart:])
-
-			// parse singular logical device
-			logDev, err := parseLogicalDeviceString(ldRawData)
-			if err != nil {
-				return []LogicalDevice{}, fmt.Errorf("error parsing logical device from arcconf getconfig ld: %s", err)
-			}
-
-			logDevs = append(logDevs, logDev)
+	for _, ldBlock := range splitLogicalDevices(rawData) {
+		logDev, err := parseLogicalDeviceString(ldBlock)
+		if err != nil {
+			return []LogicalDevice{}, fmt.Errorf("error parsing logical device from arcconf getconfig ld: %s", err)
 		}
+
+		logDevs = append(logDevs, logDev)
 	}
+
 	return logDevs, nil
 }
 
@@ -118,8 +156,8 @@ func parseLogicalDeviceString(rawData string) (LogicalDevice, error) {
 		case toks[0] == "Disk Name": // /dev/sdc (Disk0) (Bus: 1, Target: 0, Lun: 2)]
 			ld.DiskName = strings.Fields(toks[1])[0]
 
-		case toks[0] == "Block Size of member drives": // 512 Bytes]
-			bs, err := strconv.Atoi(strings.Fields(toks[1])[0])
+		case toks[0] == "Block Size of member drives": // 512 Bytes OR 4K Bytes]
+			bs, err := parseBlockSize(strings.Fields(toks[1])[0])
 			if err != nil {
 				return ld, fmt.Errorf("failed to parse BlockSize from token '%s': %s", toks[1], err)
 			}
@@ -144,12 +182,14 @@ func parseLogicalDeviceString(rawData string) (LogicalDevice, error) {
 			}
 
 			ld.SizeMB = sizeMB
-		case toks[0] == "Interface Type": // Serial Attached SCSI]
+		case toks[0] == "Interface Type":
 			switch toks[1] {
-			case "Serial Attached SCSI":
+			case "Serial Attached SCSI", "SAS 4K":
 				ld.InterfaceType = "SCSI"
-			case "Serial Attached ATA":
+			case "Serial Attached ATA", "SATA SSD":
 				ld.InterfaceType = "ATA"
+			default:
+				ld.InterfaceType = toks[1]
 			}
 		}
 	}
@@ -160,18 +200,22 @@ func parseLogicalDeviceString(rawData string) (LogicalDevice, error) {
 func parsePhysicalDevices(output string) ([]PhysicalDevice, error) {
 	// list the physical device keys we're not parsing
 	physicalDeviceParseKeys := map[string]bool{
-		"Array":               true,
-		"Block Size":          true,
-		"Firmware":            true,
-		"Model":               true,
-		"Physical Block Size": true,
-		"Serial number":       true,
-		"SSD":                 true,
-		"State":               true,
-		"Total Size":          true,
-		"Vendor":              true,
-		"Write Cache":         true,
+		"Array":                     true,
+		"Block Size":                true,
+		"Firmware":                  true,
+		"Model":                     true,
+		"Physical Block Size":       true,
+		"Serial number":             true,
+		"SSD":                       true,
+		"State":                     true,
+		"Total Size":                true,
+		"Transfer Speed":            true,
+		"Negotiated Transfer Speed": true,
+		"Vendor":                    true,
+		"Write Cache":               true,
 	}
+
+	reportedChannelRe := regexp.MustCompile(`Reported Channel,Device\(T:L\)\s*:\s*(\d+),`)
 	pDevs := []PhysicalDevice{}
 	deviceStartRe := regexp.MustCompile(`Device\ #\d+`)
 	devStartIdx := []int{}
@@ -220,6 +264,15 @@ func parsePhysicalDevices(output string) ([]PhysicalDevice, error) {
 		for _, lineRaw := range strings.Split(deviceLines[1], "\n") {
 			line := strings.TrimSpace(lineRaw)
 
+			if m := reportedChannelRe.FindStringSubmatch(line); m != nil {
+				ch, err := strconv.Atoi(m[1])
+				if err == nil {
+					pd.Channel = ch
+				}
+
+				continue
+			}
+
 			// ignore lines that didn't have colon in it or have > 1 colon
 			rawToks := strings.SplitN(line, ":", 2)
 			if len(rawToks) < 2 || len(rawToks) > 2 {
@@ -243,7 +296,7 @@ func parsePhysicalDevices(output string) ([]PhysicalDevice, error) {
 			case toks[0] == "Block Size":
 				dToks := strings.Split(toks[1], " ")
 
-				bSize, err := strconv.Atoi(dToks[0])
+				bSize, err := parseBlockSize(dToks[0])
 				if err != nil {
 					return []PhysicalDevice{}, fmt.Errorf("failed to parse Block Size from token %q: %s", dToks[0], err)
 				}
@@ -252,7 +305,7 @@ func parsePhysicalDevices(output string) ([]PhysicalDevice, error) {
 			case toks[0] == "Physical Block Size":
 				dToks := strings.Split(toks[1], " ")
 
-				bSize, err := strconv.Atoi(dToks[0])
+				bSize, err := parseBlockSize(dToks[0])
 				if err != nil {
 					return []PhysicalDevice{}, fmt.Errorf("failed to parse Physical Block Size from token %q: %s", dToks[0], err)
 				}
@@ -292,6 +345,8 @@ func parsePhysicalDevices(output string) ([]PhysicalDevice, error) {
 				pd.SizeMB = bSize
 			case toks[0] == "Write Cache":
 				pd.WriteCache = toks[1]
+			case toks[0] == "Negotiated Transfer Speed" || toks[0] == "Transfer Speed":
+				pd.Protocol = strings.Fields(toks[1])[0]
 			}
 		}
 
@@ -317,13 +372,9 @@ func parseGetConf(output string) ([]LogicalDevice, []PhysicalDevice, error) {
 		return logDevs, phyDevs, fmt.Errorf("expected more than 3 lines of data in input")
 	}
 
-	for _, device := range lines {
-		ldStart := strings.Index(device, "Logical Device number")
-		if ldStart >= 0 {
-			ldRawData := strings.TrimSpace(device[ldStart:])
-
-			// parse singular logical device
-			logDev, err := parseLogicalDeviceString(ldRawData)
+	for _, chunk := range lines {
+		for _, ldBlock := range splitLogicalDevices(chunk) {
+			logDev, err := parseLogicalDeviceString(ldBlock)
 			if err != nil {
 				return []LogicalDevice{}, []PhysicalDevice{}, fmt.Errorf("error parsing logical device from arcconf getconfig output: %s", err)
 			}
@@ -332,11 +383,10 @@ func parseGetConf(output string) ([]LogicalDevice, []PhysicalDevice, error) {
 		}
 
 		// all logical devices will have been parsed once we find the Physical Device Info section
-		pdStart := strings.Index(device, "Physical Device information")
+		pdStart := strings.Index(chunk, "Physical Device information")
 		if pdStart >= 0 {
-			pdRawData := strings.TrimSpace(device[pdStart:])
+			pdRawData := strings.TrimSpace(chunk[pdStart:])
 
-			// parse all physical devices
 			pDevs, err := parsePhysicalDevices(pdRawData)
 			if err != nil {
 				return []LogicalDevice{}, []PhysicalDevice{}, fmt.Errorf("error parsing physical device from arcconf getconfig output: %s", err)
@@ -450,13 +500,17 @@ func (ac *arcConf) GetDiskType(path string) (disko.DiskType, error) {
 		ctrl, err := ac.GetConfig(cID)
 		if err != nil {
 			errors = append(errors, fmt.Errorf("error while getting config for controller id:%d: %s", cID, err))
+			continue
 		}
-		for _, lDrive := range ctrl.LogicalDrives {
-			if lDrive.DiskName == path && lDrive.IsSSD() {
-				return disko.SSD, nil
-			}
 
-			return disko.HDD, nil
+		for _, lDrive := range ctrl.LogicalDrives {
+			if lDrive.DiskName == path {
+				if lDrive.IsSSD() {
+					return disko.SSD, nil
+				}
+
+				return disko.HDD, nil
+			}
 		}
 	}
 

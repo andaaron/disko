@@ -851,6 +851,67 @@ Controller information
 Command completed successfully.
 `
 
+func TestParseBlockSize(t *testing.T) {
+	testCases := []struct {
+		input    string
+		expected int
+		wantErr  bool
+	}{
+		{"512", 512, false},
+		{"4096", 4096, false},
+		{"4K", 4096, false},
+		{"4k", 4096, false},
+		{"", 0, true},
+		{"abc", 0, true},
+		{"1M", 0, true},
+		{"1G", 0, true},
+	}
+
+	for _, tc := range testCases {
+		result, err := parseBlockSize(tc.input)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("parseBlockSize(%q): expected error, got %d", tc.input, result)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseBlockSize(%q): unexpected error: %s", tc.input, err)
+			continue
+		}
+		if result != tc.expected {
+			t.Errorf("parseBlockSize(%q): got %d, expected %d", tc.input, result, tc.expected)
+		}
+	}
+}
+
+var arcConfGetConfigLD4K = `
+Logical Device number 0
+   Logical Device name                        : Logical Drive 1
+   Disk Name                                  : /dev/sda (Disk0) (Bus: 1, Target: 0, Lun: 0)
+   Block Size of member drives                : 4K Bytes
+   Array                                      : 0
+   RAID level                                 : 0
+   Status of Logical Device                   : Optimal
+   Size                                       : 572293 MB
+   Interface Type                             : Serial Attached SCSI
+`
+
+func TestSmartPqiLogicalDevice4KBlockSize(t *testing.T) {
+	found, err := parseLogicalDevices(arcConfGetConfigLD4K)
+	if err != nil {
+		t.Errorf("failed to parse arcconf getconfig with 4K block size: %s", err)
+		return
+	}
+	if len(found) != 1 {
+		t.Errorf("expected 1 logical device, found %d", len(found))
+		return
+	}
+	if found[0].BlockSize != 4096 {
+		t.Errorf("expected BlockSize 4096, got %d", found[0].BlockSize)
+	}
+}
+
 func TestSmartPqiList(t *testing.T) {
 	found, err := parseList(arcList)
 	if err != nil {
@@ -1021,9 +1082,9 @@ Logical Device number 0
 func TestArcconfParseConf(t *testing.T) {
 	expectedPDs := []PhysicalDevice{}
 	expectedPDsJSON := []string{
-		`{"ArrayID":0,"Availability":"Online","BlockSize":512,"Channel":0,"ID":0,"Firmware":"5703","Model":"AL15SEB060N","PhysicalBlockSize":512,"Protocol":"","SerialNumber":"63M0A0BYFJPF","SizeMB":572325,"Type":"HDD","Vendor":"TOSHIBA","WriteCache":"Disabled (write-through)"}`,
-		`{"ArrayID":1,"Availability":"Online","BlockSize":512,"Channel":0,"ID":1,"Firmware":"5701","Model":"AL15SEB120N","PhysicalBlockSize":512,"Protocol":"","SerialNumber":"59M0A06CFJRG","SizeMB":1144641,"Type":"HDD","Vendor":"TOSHIBA","WriteCache":"Disabled (write-through)"}`,
-		`{"ArrayID":2,"Availability":"Online","BlockSize":512,"Channel":0,"ID":2,"Firmware":"CN03","Model":"ST1200MM0009","PhysicalBlockSize":512,"Protocol":"","SerialNumber":"WFK076DT0000E821CET2","SizeMB":1144641,"Type":"HDD","Vendor":"SEAGATE","WriteCache":"Disabled (write-through)"}`,
+		`{"ArrayID":0,"Availability":"Online","BlockSize":512,"Channel":0,"ID":0,"Firmware":"5703","Model":"AL15SEB060N","PhysicalBlockSize":512,"Protocol":"SAS","SerialNumber":"63M0A0BYFJPF","SizeMB":572325,"Type":"HDD","Vendor":"TOSHIBA","WriteCache":"Disabled (write-through)"}`,
+		`{"ArrayID":1,"Availability":"Online","BlockSize":512,"Channel":0,"ID":1,"Firmware":"5701","Model":"AL15SEB120N","PhysicalBlockSize":512,"Protocol":"SAS","SerialNumber":"59M0A06CFJRG","SizeMB":1144641,"Type":"HDD","Vendor":"TOSHIBA","WriteCache":"Disabled (write-through)"}`,
+		`{"ArrayID":2,"Availability":"Online","BlockSize":512,"Channel":0,"ID":2,"Firmware":"CN03","Model":"ST1200MM0009","PhysicalBlockSize":512,"Protocol":"SAS","SerialNumber":"WFK076DT0000E821CET2","SizeMB":1144641,"Type":"HDD","Vendor":"SEAGATE","WriteCache":"Disabled (write-through)"}`,
 	}
 
 	for idx, content := range expectedPDsJSON {
@@ -1119,7 +1180,7 @@ func TestSmartPqiNewController(t *testing.T) {
 		t.Errorf("unexpected error creating new controller: %s", err)
 	}
 
-	expectedJSON := `{"ID":1,"PhysicalDrives":{"0":{"ArrayID":0,"Availability":"Online","BlockSize":512,"Channel":0,"ID":0,"Firmware":"5703","Model":"AL15SEB060N","PhysicalBlockSize":512,"Protocol":"","SerialNumber":"63M0A0BYFJPF","SizeMB":572325,"Type":"HDD","Vendor":"TOSHIBA","WriteCache":"Disabled (write-through)"},"1":{"ArrayID":1,"Availability":"Online","BlockSize":512,"Channel":0,"ID":1,"Firmware":"5701","Model":"AL15SEB120N","PhysicalBlockSize":512,"Protocol":"","SerialNumber":"59M0A06CFJRG","SizeMB":1144641,"Type":"HDD","Vendor":"TOSHIBA","WriteCache":"Disabled (write-through)"},"2":{"ArrayID":2,"Availability":"Online","BlockSize":512,"Channel":0,"ID":2,"Firmware":"CN03","Model":"ST1200MM0009","PhysicalBlockSize":512,"Protocol":"","SerialNumber":"WFK076DT0000E821CET2","SizeMB":1144641,"Type":"HDD","Vendor":"SEAGATE","WriteCache":"Disabled (write-through)"}},"LogicalDrives":{"0":{"ArrayID":0,"BlockSize":512,"Caching":"","Devices":[{"ArrayID":0,"Availability":"Online","BlockSize":512,"Channel":0,"ID":0,"Firmware":"5703","Model":"AL15SEB060N","PhysicalBlockSize":512,"Protocol":"","SerialNumber":"63M0A0BYFJPF","SizeMB":572325,"Type":"HDD","Vendor":"TOSHIBA","WriteCache":"Disabled (write-through)"}],"DiskName":"/dev/sdd","ID":0,"InterfaceType":"SCSI","Name":"Logical Drive 1","RAIDLevel":"0","SizeMB":572293},"1":{"ArrayID":1,"BlockSize":512,"Caching":"","Devices":[{"ArrayID":1,"Availability":"Online","BlockSize":512,"Channel":0,"ID":1,"Firmware":"5701","Model":"AL15SEB120N","PhysicalBlockSize":512,"Protocol":"","SerialNumber":"59M0A06CFJRG","SizeMB":1144641,"Type":"HDD","Vendor":"TOSHIBA","WriteCache":"Disabled (write-through)"}],"DiskName":"/dev/sde","ID":1,"InterfaceType":"SCSI","Name":"Logical Drive 2","RAIDLevel":"0","SizeMB":1144609},"2":{"ArrayID":2,"BlockSize":512,"Caching":"","Devices":[{"ArrayID":2,"Availability":"Online","BlockSize":512,"Channel":0,"ID":2,"Firmware":"CN03","Model":"ST1200MM0009","PhysicalBlockSize":512,"Protocol":"","SerialNumber":"WFK076DT0000E821CET2","SizeMB":1144641,"Type":"HDD","Vendor":"SEAGATE","WriteCache":"Disabled (write-through)"}],"DiskName":"/dev/sdc","ID":2,"InterfaceType":"SCSI","Name":"Logical Drive 3","RAIDLevel":"0","SizeMB":1144609}}}`
+	expectedJSON := `{"ID":1,"PhysicalDrives":{"0":{"ArrayID":0,"Availability":"Online","BlockSize":512,"Channel":0,"ID":0,"Firmware":"5703","Model":"AL15SEB060N","PhysicalBlockSize":512,"Protocol":"SAS","SerialNumber":"63M0A0BYFJPF","SizeMB":572325,"Type":"HDD","Vendor":"TOSHIBA","WriteCache":"Disabled (write-through)"},"1":{"ArrayID":1,"Availability":"Online","BlockSize":512,"Channel":0,"ID":1,"Firmware":"5701","Model":"AL15SEB120N","PhysicalBlockSize":512,"Protocol":"SAS","SerialNumber":"59M0A06CFJRG","SizeMB":1144641,"Type":"HDD","Vendor":"TOSHIBA","WriteCache":"Disabled (write-through)"},"2":{"ArrayID":2,"Availability":"Online","BlockSize":512,"Channel":0,"ID":2,"Firmware":"CN03","Model":"ST1200MM0009","PhysicalBlockSize":512,"Protocol":"SAS","SerialNumber":"WFK076DT0000E821CET2","SizeMB":1144641,"Type":"HDD","Vendor":"SEAGATE","WriteCache":"Disabled (write-through)"}},"LogicalDrives":{"0":{"ArrayID":0,"BlockSize":512,"Caching":"","Devices":[{"ArrayID":0,"Availability":"Online","BlockSize":512,"Channel":0,"ID":0,"Firmware":"5703","Model":"AL15SEB060N","PhysicalBlockSize":512,"Protocol":"SAS","SerialNumber":"63M0A0BYFJPF","SizeMB":572325,"Type":"HDD","Vendor":"TOSHIBA","WriteCache":"Disabled (write-through)"}],"DiskName":"/dev/sdd","ID":0,"InterfaceType":"SCSI","Name":"Logical Drive 1","RAIDLevel":"0","SizeMB":572293},"1":{"ArrayID":1,"BlockSize":512,"Caching":"","Devices":[{"ArrayID":1,"Availability":"Online","BlockSize":512,"Channel":0,"ID":1,"Firmware":"5701","Model":"AL15SEB120N","PhysicalBlockSize":512,"Protocol":"SAS","SerialNumber":"59M0A06CFJRG","SizeMB":1144641,"Type":"HDD","Vendor":"TOSHIBA","WriteCache":"Disabled (write-through)"}],"DiskName":"/dev/sde","ID":1,"InterfaceType":"SCSI","Name":"Logical Drive 2","RAIDLevel":"0","SizeMB":1144609},"2":{"ArrayID":2,"BlockSize":512,"Caching":"","Devices":[{"ArrayID":2,"Availability":"Online","BlockSize":512,"Channel":0,"ID":2,"Firmware":"CN03","Model":"ST1200MM0009","PhysicalBlockSize":512,"Protocol":"SAS","SerialNumber":"WFK076DT0000E821CET2","SizeMB":1144641,"Type":"HDD","Vendor":"SEAGATE","WriteCache":"Disabled (write-through)"}],"DiskName":"/dev/sdc","ID":2,"InterfaceType":"SCSI","Name":"Logical Drive 3","RAIDLevel":"0","SizeMB":1144609}}}`
 	expCtrl := Controller{}
 	if err := json.Unmarshal([]byte(expectedJSON), &expCtrl); err != nil {
 		t.Errorf("failed to unmarshal expected Controller JSON: %s", err)
@@ -1127,6 +1188,365 @@ func TestSmartPqiNewController(t *testing.T) {
 
 	if !reflect.DeepEqual(expCtrl, ctrl) {
 		t.Errorf("controller differed:\n found: %#v\n expct: %#v ", ctrl, expCtrl)
+	}
+}
+
+// arcconf GETCONFIG output with mixed SSD/HDD arrays and 4K native sector drives.
+// Confidential identifiers (serial numbers, WWNs) replaced with synthetic values.
+// Unparsed sections (sensors, SPDM, error counters, phy info) trimmed for clarity.
+// This tests that the parser handles multiple LDs in the same \n\n\n chunk.
+var arcConfGetConfigMixedArrays = `
+Controllers found: 1
+----------------------------------------------------------------------
+Controller information
+----------------------------------------------------------------------
+   Controller Status                                     : Optimal
+   Controller Mode                                       : Mixed
+   Controller Model                                      : Cisco 24G TriMode M1 RAID 4GB FBWC 16D UCSC-RAID-M1L16
+   Driver Name                                           : smartpqi
+   Connector #0
+      Connector name                                     : CN2
+
+
+   Connector #1
+      Connector name                                     : CN3
+
+
+
+----------------------------------------------------------------------
+Array Information
+----------------------------------------------------------------------
+Array Number 0
+   Name                                                  : A
+   Interface                                             : SATA SSD
+   Block Size                                            : 512 Bytes
+   Device 0                                              : Present (915715MB, SATA, SSD, Connector:CN2, Backplane:0, Slot:1) SN_SSD_0
+
+
+Array Number 1
+   Name                                                  : B
+   Interface                                             : SAS 4K
+   Block Size                                            : 4K Bytes
+   Device 1                                              : Present (2289272MB, SAS, HDD, Connector:CN2, Backplane:0, Slot:2) SN_HDD_1
+   Device 2                                              : Present (2289272MB, SAS, HDD, Connector:CN2, Backplane:0, Slot:3) SN_HDD_2
+   Device 3                                              : Present (2289272MB, SAS, HDD, Connector:CN2, Backplane:0, Slot:4) SN_HDD_3
+   Device 4                                              : Present (2289272MB, SAS, HDD, Connector:CN2, Backplane:0, Slot:6) SN_HDD_4
+   Device 5                                              : Present (2289272MB, SAS, HDD, Connector:CN2, Backplane:0, Slot:7) SN_HDD_5
+   Device 8                                              : Present (2289272MB, SAS, HDD, Connector:CN2, Backplane:0, Slot:5) SN_HDD_8
+
+
+
+--------------------------------------------------------
+Logical device information
+--------------------------------------------------------
+Logical Device number 0
+   Logical Device name                                   : RAID0_1
+   Disk Name                                             : /dev/sdb (Disk0) (Bus: 1, Target: 0, Lun: 0)
+   Block Size of member drives                           : 512 Bytes
+   Array                                                 : 0
+   RAID level                                            : 0
+   Status of Logical Device                              : Optimal
+   Size                                                  : 915527 MB
+   Interface Type                                        : SATA SSD
+   Device 0                                              : Present (915715MB, SATA, SSD, Connector:CN2, Backplane:0, Slot:1) SN_SSD_0
+
+Logical Device number 1
+   Logical Device name                                   : RAID0_234567
+   Disk Name                                             : /dev/sda (Disk0) (Bus: 1, Target: 0, Lun: 1)
+   Block Size of member drives                           : 4K Bytes
+   Array                                                 : 1
+   RAID level                                            : 0
+   Status of Logical Device                              : Optimal
+   Size                                                  : 13732910 MB
+   Interface Type                                        : SAS 4K
+   Device 1                                              : Present (2289272MB, SAS, HDD, Connector:CN2, Backplane:0, Slot:2) SN_HDD_1
+   Device 8                                              : Present (2289272MB, SAS, HDD, Connector:CN2, Backplane:0, Slot:5) SN_HDD_8
+
+
+----------------------------------------------------------------------
+Physical Device information
+----------------------------------------------------------------------
+   Channel #0:
+      Device #0
+         Device is a Hard drive
+         State                                           : Online
+         Block Size                                      : 512 Bytes
+         Physical Block Size                             : 4K Bytes
+         Negotiated Transfer Speed                       : SATA 6.0 Gb/s
+         Reported Channel,Device(T:L)                    : 0,0(0:0)
+         Array                                           : 0
+         Vendor                                          : ATA
+         Model                                           : Micron_5300_MTFDDAK960TDS
+         Firmware                                        : D3MC000
+         Serial number                                   : SN_SSD_0
+         Total Size                                      : 915715 MB
+         Write Cache                                     : Disabled (write-through)
+         SSD                                             : Yes
+
+      Device #1
+         Device is a Hard drive
+         State                                           : Online
+         Block Size                                      : 4K Bytes
+         Physical Block Size                             : 4K Bytes
+         Negotiated Transfer Speed                       : SAS 12.0 Gb/s
+         Reported Channel,Device(T:L)                    : 0,1(1:0)
+         Array                                           : 1
+         Vendor                                          : TOSHIBA
+         Model                                           : AL15SEB24EP
+         Firmware                                        : 5704
+         Serial number                                   : SN_HDD_1
+         Total Size                                      : 2289272 MB
+         Write Cache                                     : Disabled (write-through)
+         SSD                                             : No
+
+      Device #2
+         Device is a Hard drive
+         State                                           : Online
+         Block Size                                      : 4K Bytes
+         Physical Block Size                             : 4K Bytes
+         Negotiated Transfer Speed                       : SAS 12.0 Gb/s
+         Reported Channel,Device(T:L)                    : 0,2(2:0)
+         Array                                           : 1
+         Vendor                                          : TOSHIBA
+         Model                                           : AL15SEB24EP
+         Firmware                                        : 5704
+         Serial number                                   : SN_HDD_2
+         Total Size                                      : 2289272 MB
+         Write Cache                                     : Enabled
+         SSD                                             : No
+
+      Device #3
+         Device is a Hard drive
+         State                                           : Online
+         Block Size                                      : 4K Bytes
+         Physical Block Size                             : 4K Bytes
+         Negotiated Transfer Speed                       : SAS 12.0 Gb/s
+         Reported Channel,Device(T:L)                    : 0,3(3:0)
+         Array                                           : 1
+         Vendor                                          : TOSHIBA
+         Model                                           : AL15SEB24EP
+         Firmware                                        : 5704
+         Serial number                                   : SN_HDD_3
+         Total Size                                      : 2289272 MB
+         Write Cache                                     : Disabled (write-through)
+         SSD                                             : No
+
+      Device #4
+         Device is a Hard drive
+         State                                           : Online
+         Block Size                                      : 4K Bytes
+         Physical Block Size                             : 4K Bytes
+         Negotiated Transfer Speed                       : SAS 12.0 Gb/s
+         Reported Channel,Device(T:L)                    : 0,4(4:0)
+         Array                                           : 1
+         Vendor                                          : TOSHIBA
+         Model                                           : AL15SEB24EP
+         Firmware                                        : 5704
+         Serial number                                   : SN_HDD_4
+         Total Size                                      : 2289272 MB
+         Write Cache                                     : Disabled (write-through)
+         SSD                                             : No
+
+      Device #5
+         Device is a Hard drive
+         State                                           : Online
+         Block Size                                      : 4K Bytes
+         Physical Block Size                             : 4K Bytes
+         Negotiated Transfer Speed                       : SAS 12.0 Gb/s
+         Reported Channel,Device(T:L)                    : 0,5(5:0)
+         Array                                           : 1
+         Vendor                                          : TOSHIBA
+         Model                                           : AL15SEB24EP
+         Firmware                                        : 5704
+         Serial number                                   : SN_HDD_5
+         Total Size                                      : 2289272 MB
+         Write Cache                                     : Disabled (write-through)
+         SSD                                             : No
+
+      Device #8
+         Device is a Hard drive
+         State                                           : Online
+         Block Size                                      : 4K Bytes
+         Physical Block Size                             : 4K Bytes
+         Negotiated Transfer Speed                       : SAS 12.0 Gb/s
+         Reported Channel,Device(T:L)                    : 0,8(8:0)
+         Array                                           : 1
+         Vendor                                          : TOSHIBA
+         Model                                           : AL15SEB24EP
+         Firmware                                        : 5704
+         Serial number                                   : SN_HDD_8
+         Total Size                                      : 2289272 MB
+         Write Cache                                     : Disabled (write-through)
+         SSD                                             : No
+
+   Channel #2:
+      Device #0
+         Device is an Enclosure Services Device
+         Reported Channel,Device(T:L)                    : 2,0(0:0)
+         Enclosure ID                                    : 0
+         Type                                            : SES2
+         Vendor                                          : Cisco
+
+     Backplane:
+      Device #0
+         Device is an UBM Controller
+         Backplane ID                                    : 0
+         Type                                            : UBM
+         Firmware                                        : 0.2 (dec), 0.2 (hex)
+
+
+----------------------------------------------------------------------
+maxCache information
+----------------------------------------------------------------------
+   No maxCache Array found
+
+
+Command completed successfully.
+`
+
+func TestSmartPqiGetConfigMixedArrays(t *testing.T) {
+	ctrl, err := newController(1, arcConfGetConfigMixedArrays)
+	if err != nil {
+		t.Fatalf("failed to parse arcconf getconfig: %s", err)
+	}
+
+	// --- Logical Drives ---
+
+	expectedLDs := []struct {
+		id            int
+		name          string
+		diskName      string
+		blockSize     int
+		arrayID       int
+		raidLevel     string
+		sizeMB        int
+		interfaceType string
+		isSSD         bool
+		numDevices    int
+	}{
+		{0, "RAID0_1", "/dev/sdb", 512, 0, "0", 915527, "ATA", true, 1},
+		{1, "RAID0_234567", "/dev/sda", 4096, 1, "0", 13732910, "SCSI", false, 6},
+	}
+
+	if len(ctrl.LogicalDrives) != len(expectedLDs) {
+		t.Fatalf("expected %d logical drives, got %d", len(expectedLDs), len(ctrl.LogicalDrives))
+	}
+
+	for _, exp := range expectedLDs {
+		ld := ctrl.LogicalDrives[exp.id]
+		if ld == nil {
+			t.Fatalf("missing logical drive %d", exp.id)
+		}
+		if ld.ID != exp.id {
+			t.Errorf("LD%d ID: got %d, want %d", exp.id, ld.ID, exp.id)
+		}
+		if ld.Name != exp.name {
+			t.Errorf("LD%d Name: got %q, want %q", exp.id, ld.Name, exp.name)
+		}
+		if ld.DiskName != exp.diskName {
+			t.Errorf("LD%d DiskName: got %q, want %q", exp.id, ld.DiskName, exp.diskName)
+		}
+		if ld.BlockSize != exp.blockSize {
+			t.Errorf("LD%d BlockSize: got %d, want %d", exp.id, ld.BlockSize, exp.blockSize)
+		}
+		if ld.ArrayID != exp.arrayID {
+			t.Errorf("LD%d ArrayID: got %d, want %d", exp.id, ld.ArrayID, exp.arrayID)
+		}
+		if ld.RAIDLevel != exp.raidLevel {
+			t.Errorf("LD%d RAIDLevel: got %q, want %q", exp.id, ld.RAIDLevel, exp.raidLevel)
+		}
+		if ld.SizeMB != exp.sizeMB {
+			t.Errorf("LD%d SizeMB: got %d, want %d", exp.id, ld.SizeMB, exp.sizeMB)
+		}
+		if ld.InterfaceType != exp.interfaceType {
+			t.Errorf("LD%d InterfaceType: got %q, want %q", exp.id, ld.InterfaceType, exp.interfaceType)
+		}
+		if ld.IsSSD() != exp.isSSD {
+			t.Errorf("LD%d IsSSD: got %v, want %v", exp.id, ld.IsSSD(), exp.isSSD)
+		}
+		if len(ld.Devices) != exp.numDevices {
+			t.Errorf("LD%d linked devices: got %d, want %d", exp.id, len(ld.Devices), exp.numDevices)
+		}
+	}
+
+	// --- Physical Drives ---
+
+	expectedPDs := []struct {
+		id                int
+		channel           int
+		arrayID           int
+		availability      string
+		blockSize         int
+		physicalBlockSize int
+		protocol          string
+		vendor            string
+		model             string
+		firmware          string
+		serialNumber      string
+		sizeMB            int
+		mediaType         MediaType
+		writeCache        string
+	}{
+		{0, 0, 0, "Online", 512, 4096, "SATA", "ATA", "Micron_5300_MTFDDAK960TDS", "D3MC000", "SN_SSD_0", 915715, SSD, "Disabled (write-through)"},
+		{1, 0, 1, "Online", 4096, 4096, "SAS", "TOSHIBA", "AL15SEB24EP", "5704", "SN_HDD_1", 2289272, HDD, "Disabled (write-through)"},
+		{2, 0, 1, "Online", 4096, 4096, "SAS", "TOSHIBA", "AL15SEB24EP", "5704", "SN_HDD_2", 2289272, HDD, "Enabled"},
+		{3, 0, 1, "Online", 4096, 4096, "SAS", "TOSHIBA", "AL15SEB24EP", "5704", "SN_HDD_3", 2289272, HDD, "Disabled (write-through)"},
+		{4, 0, 1, "Online", 4096, 4096, "SAS", "TOSHIBA", "AL15SEB24EP", "5704", "SN_HDD_4", 2289272, HDD, "Disabled (write-through)"},
+		{5, 0, 1, "Online", 4096, 4096, "SAS", "TOSHIBA", "AL15SEB24EP", "5704", "SN_HDD_5", 2289272, HDD, "Disabled (write-through)"},
+		{8, 0, 1, "Online", 4096, 4096, "SAS", "TOSHIBA", "AL15SEB24EP", "5704", "SN_HDD_8", 2289272, HDD, "Disabled (write-through)"},
+	}
+
+	if len(ctrl.PhysicalDrives) != len(expectedPDs) {
+		t.Fatalf("expected %d physical drives, got %d", len(expectedPDs), len(ctrl.PhysicalDrives))
+	}
+
+	for _, exp := range expectedPDs {
+		pd := ctrl.PhysicalDrives[exp.id]
+		if pd == nil {
+			t.Fatalf("missing physical drive %d", exp.id)
+		}
+		if pd.ID != exp.id {
+			t.Errorf("PD%d ID: got %d, want %d", exp.id, pd.ID, exp.id)
+		}
+		if pd.Channel != exp.channel {
+			t.Errorf("PD%d Channel: got %d, want %d", exp.id, pd.Channel, exp.channel)
+		}
+		if pd.ArrayID != exp.arrayID {
+			t.Errorf("PD%d ArrayID: got %d, want %d", exp.id, pd.ArrayID, exp.arrayID)
+		}
+		if pd.Availability != exp.availability {
+			t.Errorf("PD%d Availability: got %q, want %q", exp.id, pd.Availability, exp.availability)
+		}
+		if pd.BlockSize != exp.blockSize {
+			t.Errorf("PD%d BlockSize: got %d, want %d", exp.id, pd.BlockSize, exp.blockSize)
+		}
+		if pd.PhysicalBlockSize != exp.physicalBlockSize {
+			t.Errorf("PD%d PhysicalBlockSize: got %d, want %d", exp.id, pd.PhysicalBlockSize, exp.physicalBlockSize)
+		}
+		if pd.Protocol != exp.protocol {
+			t.Errorf("PD%d Protocol: got %q, want %q", exp.id, pd.Protocol, exp.protocol)
+		}
+		if pd.Vendor != exp.vendor {
+			t.Errorf("PD%d Vendor: got %q, want %q", exp.id, pd.Vendor, exp.vendor)
+		}
+		if pd.Model != exp.model {
+			t.Errorf("PD%d Model: got %q, want %q", exp.id, pd.Model, exp.model)
+		}
+		if pd.Firmware != exp.firmware {
+			t.Errorf("PD%d Firmware: got %q, want %q", exp.id, pd.Firmware, exp.firmware)
+		}
+		if pd.SerialNumber != exp.serialNumber {
+			t.Errorf("PD%d SerialNumber: got %q, want %q", exp.id, pd.SerialNumber, exp.serialNumber)
+		}
+		if pd.SizeMB != exp.sizeMB {
+			t.Errorf("PD%d SizeMB: got %d, want %d", exp.id, pd.SizeMB, exp.sizeMB)
+		}
+		if pd.Type != exp.mediaType {
+			t.Errorf("PD%d Type: got %v, want %v", exp.id, pd.Type, exp.mediaType)
+		}
+		if pd.WriteCache != exp.writeCache {
+			t.Errorf("PD%d WriteCache: got %q, want %q", exp.id, pd.WriteCache, exp.writeCache)
+		}
 	}
 }
 
