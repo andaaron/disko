@@ -1,6 +1,7 @@
 package linux
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -18,6 +19,10 @@ import (
 
 type linuxSystem struct {
 	raidctrls []RAIDController
+	// isSysPathRAID resolves whether a udev DEVPATH belongs to the driver
+	// rooted at driverSysPath. It defaults to sysfs.IsSysPathRAID in
+	// production; tests inject a stub to avoid touching real /sys.
+	isSysPathRAID func(syspath, driverSysPath string) bool
 }
 
 // System returns an linux specific implementation of disko.System interface.
@@ -28,6 +33,7 @@ func System() disko.System {
 			smartpqi.ArcConf(),
 			mpi3mr.StorCli2(),
 		},
+		isSysPathRAID: IsSysPathRAID,
 	}
 }
 
@@ -161,28 +167,14 @@ func (ls *linuxSystem) ScanDisk(devicePath string) (disko.Disk, error) {
 
 		attachType = getAttachType(udInfo)
 
-		for _, ctrl := range ls.raidctrls {
-			if IsSysPathRAID(udInfo.Properties["DEVPATH"], ctrl.DriverSysfsPath()) {
-				// we know this is device is part of a raid, so if we cannot get
-				// disk type we must return an error
-				dType, err := ctrl.GetDiskType(devicePath)
-				if err != nil {
-					return disko.Disk{}, fmt.Errorf("failed to get diskType of %q from RAID controller: %s", devicePath, err)
-				}
-
-				attachType = disko.RAID
-				diskType = dType
-
-				break
-			}
+		var onRAID bool
+		diskType, onRAID, err = ls.resolveDiskType(devicePath, udInfo)
+		if err != nil {
+			return disko.Disk{}, fmt.Errorf("error while getting disk type: %s", err)
 		}
 
-		// check disk type if it wasn't on raid
-		if attachType != disko.RAID {
-			diskType, err = getDiskType(udInfo)
-			if err != nil {
-				return disko.Disk{}, fmt.Errorf("error while getting disk type: %s", err)
-			}
+		if onRAID {
+			attachType = disko.RAID
 		}
 
 		ro, err = getDiskReadOnly(name)
@@ -298,15 +290,42 @@ func (ls *linuxSystem) Wipe(d disko.Disk) error {
 }
 
 func (ls *linuxSystem) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskType, error) {
+	dType, _, err := ls.resolveDiskType(path, udInfo)
+	return dType, err
+}
+
+// resolveDiskType classifies devicePath as a DiskType. If the device sits
+// behind a known RAID controller and corresponds to a virtual/logical drive,
+// the controller's classification is used and the returned bool is true. For
+// devices that are either not on a RAID controller or are visible through a
+// RAID HBA in JBOD/passthrough mode (ErrNotVirtualDrive), the function falls
+// back to generic detection via getDiskType(udInfo) with the bool set to
+// false.
+func (ls *linuxSystem) resolveDiskType(devicePath string, udInfo disko.UdevInfo) (disko.DiskType, bool, error) {
+	devpath := udInfo.Properties["DEVPATH"]
+
 	for _, ctrl := range ls.raidctrls {
-		if IsSysPathRAID(udInfo.Properties["DEVPATH"], ctrl.DriverSysfsPath()) {
-			dType, err := ctrl.GetDiskType(path)
-			if err != nil {
-				return disko.HDD, fmt.Errorf("failed to get diskType of %q from RAID controller: %s", path, err)
+		if !ls.isSysPathRAID(devpath, ctrl.DriverSysfsPath()) {
+			continue
+		}
+
+		dType, err := ctrl.GetDiskType(devicePath)
+		if err != nil {
+			if errors.Is(err, disko.ErrNotVirtualDrive) {
+				log.Printf("device %q on RAID sysfs path has no virtual drive (JBOD?), using generic detection", devicePath)
+				break
 			}
 
-			return dType, nil
+			return disko.HDD, false, fmt.Errorf("failed to get diskType of %q from RAID controller: %s", devicePath, err)
 		}
+
+		return dType, true, nil
 	}
-	return getDiskType(udInfo)
+
+	dType, err := getDiskType(udInfo)
+	if err != nil {
+		return disko.HDD, false, err
+	}
+
+	return dType, false, nil
 }

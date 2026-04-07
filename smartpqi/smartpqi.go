@@ -124,9 +124,6 @@ type SmartPqi interface {
 
 	// DriverSysfsPath - Return the sysfs path to the linux driver for this controller
 	DriverSysfsPath() string
-
-	// IsSysPathRAID - Check if sysfs path is a device on the controller
-	IsSysPathRAID(string) bool
 }
 
 // ErrNoController - Error reported by Query if no controller is found.

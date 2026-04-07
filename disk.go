@@ -2,12 +2,19 @@ package disko
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"machinerun.io/disko/partid"
 )
+
+// ErrNotVirtualDrive is returned by RAIDController.GetDiskType when the
+// device path does not match any virtual/logical drive on the controller.
+// This typically indicates a JBOD/passthrough disk that the OS sees through
+// the RAID HBA sysfs tree but which has no corresponding VD/LD entry.
+var ErrNotVirtualDrive = errors.New("device is not a virtual/logical drive on the RAID controller")
 
 // DiskType enumerates supported disk types.
 type DiskType int
