@@ -15,6 +15,7 @@ import (
 
 	"github.com/pkg/errors"
 	"machinerun.io/disko"
+	"machinerun.io/disko/linux/sysfs"
 )
 
 // GetUdevInfo return a UdevInfo for the device with kernel name kname.
@@ -292,31 +293,9 @@ func Floor(val, unit uint64) uint64 {
 }
 
 // IsSysPathRAID - is this sys path (udevadm info's DEVPATH) on a scsi controller.
-//
-//	syspath will look something like
-//	   /devices/pci0000:3a/0000:3a:02.0/0000:3c:00.0/host0/target0:2:2/0:2:2:0/block/sdc
+// Deprecated: use sysfs.IsSysPathRAID directly; kept for backward compatibility.
 func IsSysPathRAID(syspath string, driverSysPath string) bool {
-	if !strings.HasPrefix(syspath, "/sys") {
-		syspath = "/sys" + syspath
-	}
-
-	if !strings.Contains(syspath, "/host") {
-		return false
-	}
-
-	fp, err := filepath.EvalSymlinks(syspath)
-	if err != nil {
-		fmt.Printf("seriously? %s\n", err)
-		return false
-	}
-
-	for _, path := range GetSysPaths(driverSysPath) {
-		if strings.HasPrefix(fp, path) {
-			return true
-		}
-	}
-
-	return false
+	return sysfs.IsSysPathRAID(syspath, driverSysPath)
 }
 
 // NameByDiskID - return the linux name (sda) for the disk with given DiskID
@@ -340,29 +319,8 @@ func NameByDiskID(driverSysPath string, id int) (string, error) {
 	return path.Base(matches[0]), nil
 }
 
+// GetSysPaths returns resolved PCI device paths for a RAID driver.
+// Deprecated: use sysfs.GetSysPaths directly; kept for backward compatibility.
 func GetSysPaths(driverSysPath string) []string {
-	paths := []string{}
-	// a raid driver has directory entries for each of the scsi hosts on that controller.
-	//   $cd /sys/bus/pci/drivers/<driver name>
-	//   $ for d in *; do [ -d "$d" ] || continue; echo "$d -> $( cd "$d" && pwd -P )"; done
-	//    0000:3c:00.0 -> /sys/devices/pci0000:3a/0000:3a:02.0/0000:3c:00.0
-	//    module -> /sys/module/<driver module name>
-
-	// We take a hack path and consider anything with a ":" in that dir as a host path.
-	matches, err := filepath.Glob(driverSysPath + "/*:*")
-
-	if err != nil {
-		fmt.Printf("errors: %s\n", err)
-		return paths
-	}
-
-	for _, p := range matches {
-		fp, err := filepath.EvalSymlinks(p)
-
-		if err == nil {
-			paths = append(paths, fp)
-		}
-	}
-
-	return paths
+	return sysfs.GetSysPaths(driverSysPath)
 }

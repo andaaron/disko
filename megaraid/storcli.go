@@ -12,6 +12,7 @@ import (
 
 	"github.com/patrickmn/go-cache"
 	"machinerun.io/disko"
+	"machinerun.io/disko/linux/sysfs"
 )
 
 type storCli struct {
@@ -634,6 +635,8 @@ func (csc *cachingStorCli) GetDiskType(path string) (disko.DiskType, error) {
 				return disko.HDD, nil
 			}
 		}
+
+		return disko.HDD, disko.ErrNotVirtualDrive
 	} else if err != ErrNoStorcli && err != ErrNoController && err != ErrUnsupported {
 		return disko.HDD, err
 	}
@@ -645,7 +648,6 @@ func (csc *cachingStorCli) DriverSysfsPath() string {
 	return csc.mr.DriverSysfsPath()
 }
 
-// not implemented in the driver layer
 func (csc *cachingStorCli) IsSysPathRAID(syspath string) bool {
-	return false
+	return sysfs.IsSysPathRAID(syspath, csc.DriverSysfsPath())
 }

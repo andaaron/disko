@@ -1,6 +1,7 @@
 package linux
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -234,4 +235,332 @@ func TestCreatePartitions(t *testing.T) {
 	ast.Equal(disk.Size, scannedDisk.Size)
 	ast.Equal(disko.FILESYSTEM, scannedDisk.Attachment)
 	ast.Equal(disko.TYPEFILE, scannedDisk.Type)
+}
+
+type mockRAIDController struct {
+	diskType          disko.DiskType
+	err               error
+	sysfsPath         string
+	isSysPathRAID     bool
+	getDiskTypeCalled bool
+	getDiskTypePath   string
+}
+
+func (m *mockRAIDController) GetDiskType(path string) (disko.DiskType, error) {
+	m.getDiskTypeCalled = true
+	m.getDiskTypePath = path
+	return m.diskType, m.err
+}
+
+func (m *mockRAIDController) IsSysPathRAID(syspath string) bool {
+	return m.isSysPathRAID
+}
+
+func (m *mockRAIDController) DriverSysfsPath() string {
+	return m.sysfsPath
+}
+
+func TestGetDiskTypeRAIDMatchHDD(t *testing.T) {
+	ast := assert.New(t)
+	mock := &mockRAIDController{
+		diskType:      disko.HDD,
+		err:           nil,
+		sysfsPath:     "/sys/bus/pci/drivers/megaraid_sas",
+		isSysPathRAID: true,
+	}
+
+	ls := &linuxSystem{raidctrls: []RAIDController{mock}}
+	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}}
+
+	dtype, err := ls.GetDiskType("/dev/sda", udInfo)
+	ast.NoError(err)
+	ast.Equal(disko.HDD, dtype)
+	ast.True(mock.getDiskTypeCalled)
+	ast.Equal("/dev/sda", mock.getDiskTypePath)
+}
+
+func TestGetDiskTypeRAIDMatchSSD(t *testing.T) {
+	ast := assert.New(t)
+	mock := &mockRAIDController{
+		diskType:      disko.SSD,
+		err:           nil,
+		sysfsPath:     "/sys/bus/pci/drivers/megaraid_sas",
+		isSysPathRAID: true,
+	}
+
+	ls := &linuxSystem{raidctrls: []RAIDController{mock}}
+	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}}
+
+	dtype, err := ls.GetDiskType("/dev/sda", udInfo)
+	ast.NoError(err)
+	ast.Equal(disko.SSD, dtype)
+	ast.True(mock.getDiskTypeCalled)
+}
+
+func TestGetDiskTypeJBODFallback(t *testing.T) {
+	ast := assert.New(t)
+	mock := &mockRAIDController{
+		diskType:      disko.HDD,
+		err:           disko.ErrNotVirtualDrive,
+		sysfsPath:     "/sys/bus/pci/drivers/megaraid_sas",
+		isSysPathRAID: true,
+	}
+
+	ls := &linuxSystem{raidctrls: []RAIDController{mock}}
+	udInfo := disko.UdevInfo{
+		Name: "sda",
+		Properties: map[string]string{
+			"DEVPATH": "/devices/pci/host0/block/sda",
+			"ID_BUS":  "scsi",
+			"DEVTYPE": "disk",
+		},
+	}
+
+	dtype, err := ls.GetDiskType("/dev/sda", udInfo)
+
+	ast.True(mock.getDiskTypeCalled, "RAID controller should have been consulted")
+	ast.NoError(err, "ErrNotVirtualDrive should not propagate as a fatal error")
+	ast.Equal(disko.HDD, dtype, "should fall through to generic detection (HDD default)")
+}
+
+func TestGetDiskTypeWrappedSentinelFallback(t *testing.T) {
+	ast := assert.New(t)
+	wrappedErr := fmt.Errorf("controller 0: %w", disko.ErrNotVirtualDrive)
+
+	mock := &mockRAIDController{
+		diskType:      disko.HDD,
+		err:           wrappedErr,
+		sysfsPath:     "/sys/bus/pci/drivers/megaraid_sas",
+		isSysPathRAID: true,
+	}
+
+	ls := &linuxSystem{raidctrls: []RAIDController{mock}}
+	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}}
+
+	_, err := ls.GetDiskType("/dev/sda", udInfo)
+	ast.NoError(err, "wrapped ErrNotVirtualDrive should still trigger fallback via errors.Is")
+}
+
+func TestGetDiskTypeRAIDRealError(t *testing.T) {
+	ast := assert.New(t)
+	mock := &mockRAIDController{
+		diskType:      disko.HDD,
+		err:           fmt.Errorf("storcli binary crashed"),
+		sysfsPath:     "/sys/bus/pci/drivers/megaraid_sas",
+		isSysPathRAID: true,
+	}
+
+	ls := &linuxSystem{raidctrls: []RAIDController{mock}}
+	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}}
+
+	_, err := ls.GetDiskType("/dev/sda", udInfo)
+	ast.Error(err)
+	ast.Contains(err.Error(), "failed to get diskType")
+	ast.Contains(err.Error(), "storcli binary crashed")
+	ast.False(errors.Is(err, disko.ErrNotVirtualDrive))
+}
+
+func TestGetDiskTypeNoRAIDMatch(t *testing.T) {
+	ast := assert.New(t)
+	mock := &mockRAIDController{
+		diskType:      disko.HDD,
+		err:           nil,
+		sysfsPath:     "/sys/bus/pci/drivers/megaraid_sas",
+		isSysPathRAID: false,
+	}
+
+	ls := &linuxSystem{raidctrls: []RAIDController{mock}}
+	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}}
+
+	_, err := ls.GetDiskType("/dev/sda", udInfo)
+	ast.False(mock.getDiskTypeCalled, "should not call GetDiskType when sysfs path doesn't match")
+	_ = err
+}
+
+func TestGetDiskTypeMultiControllerJBODFallback(t *testing.T) {
+	ast := assert.New(t)
+
+	megaraidMock := &mockRAIDController{
+		diskType:      disko.HDD,
+		err:           disko.ErrNotVirtualDrive,
+		sysfsPath:     "/sys/bus/pci/drivers/megaraid_sas",
+		isSysPathRAID: true,
+	}
+
+	smartpqiMock := &mockRAIDController{
+		diskType:      disko.HDD,
+		err:           nil,
+		sysfsPath:     "/sys/bus/pci/drivers/smartpqi",
+		isSysPathRAID: true,
+	}
+
+	ls := &linuxSystem{raidctrls: []RAIDController{megaraidMock, smartpqiMock}}
+	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}}
+
+	_, err := ls.GetDiskType("/dev/sda", udInfo)
+	ast.NoError(err)
+	ast.True(megaraidMock.getDiskTypeCalled, "megaraid should have been tried")
+	ast.False(smartpqiMock.getDiskTypeCalled, "smartpqi should NOT be tried after break from megaraid ErrNotVirtualDrive")
+}
+
+// udevInfoFallbackStub returns a UdevInfo that drives getDiskType's
+// nvme-prefix short-circuit, so fallback tests get a deterministic
+// (disko.NVME, nil) result without touching /dev or sysfs. The observed
+// disk type is a fingerprint that the fallback ran; it is not itself under
+// test.
+func udevInfoFallbackStub(devpath string) disko.UdevInfo {
+	return disko.UdevInfo{
+		Name: "nvme0n1",
+		Properties: map[string]string{
+			"DEVPATH": devpath,
+			"DEVTYPE": "disk",
+		},
+	}
+}
+
+func TestResolveDiskType_RAIDMatchSSD(t *testing.T) {
+	ast := assert.New(t)
+	mock := &mockRAIDController{
+		diskType:      disko.SSD,
+		isSysPathRAID: true,
+	}
+
+	ls := &linuxSystem{raidctrls: []RAIDController{mock}}
+
+	dType, onRAID, err := ls.resolveDiskType("/dev/sda",
+		disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}})
+	ast.NoError(err)
+	ast.True(onRAID)
+	ast.Equal(disko.SSD, dType)
+	ast.True(mock.getDiskTypeCalled)
+	ast.Equal("/dev/sda", mock.getDiskTypePath)
+}
+
+func TestResolveDiskType_RAIDMatchHDD(t *testing.T) {
+	ast := assert.New(t)
+	mock := &mockRAIDController{
+		diskType:      disko.HDD,
+		isSysPathRAID: true,
+	}
+
+	ls := &linuxSystem{raidctrls: []RAIDController{mock}}
+
+	dType, onRAID, err := ls.resolveDiskType("/dev/sda",
+		disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}})
+	ast.NoError(err)
+	ast.True(onRAID)
+	ast.Equal(disko.HDD, dType)
+}
+
+// An ErrNotVirtualDrive from the controller must not propagate; resolveDiskType
+// falls through to the udev classifier.
+func TestResolveDiskType_JBODFallsThroughToUdev(t *testing.T) {
+	ast := assert.New(t)
+	mock := &mockRAIDController{
+		err:           disko.ErrNotVirtualDrive,
+		isSysPathRAID: true,
+	}
+
+	ls := &linuxSystem{raidctrls: []RAIDController{mock}}
+
+	dType, onRAID, err := ls.resolveDiskType("/dev/nvme0n1",
+		udevInfoFallbackStub("/devices/pci/host0/block/nvme0n1"))
+	ast.NoError(err)
+	ast.False(onRAID)
+	ast.True(mock.getDiskTypeCalled)
+	ast.Equal(disko.NVME, dType)
+}
+
+// Same contract as the previous test, but the sentinel is wrapped via
+// fmt.Errorf("...: %w", ...); errors.Is must still trigger the fallback.
+func TestResolveDiskType_WrappedJBODFallsThroughToUdev(t *testing.T) {
+	ast := assert.New(t)
+	mock := &mockRAIDController{
+		err:           fmt.Errorf("controller 0: %w", disko.ErrNotVirtualDrive),
+		isSysPathRAID: true,
+	}
+
+	ls := &linuxSystem{raidctrls: []RAIDController{mock}}
+
+	dType, onRAID, err := ls.resolveDiskType("/dev/nvme0n1",
+		udevInfoFallbackStub("/devices/pci/host0/block/nvme0n1"))
+	ast.NoError(err)
+	ast.False(onRAID)
+	ast.Equal(disko.NVME, dType)
+}
+
+// Non-sentinel controller errors must surface to the caller, not be swallowed
+// into the udev fallback.
+func TestResolveDiskType_RealErrorIsPropagated(t *testing.T) {
+	ast := assert.New(t)
+	mock := &mockRAIDController{
+		err:           fmt.Errorf("storcli binary crashed"),
+		isSysPathRAID: true,
+	}
+
+	ls := &linuxSystem{raidctrls: []RAIDController{mock}}
+
+	_, onRAID, err := ls.resolveDiskType("/dev/sda",
+		disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}})
+	ast.Error(err)
+	ast.False(onRAID)
+	ast.Contains(err.Error(), "storcli binary crashed")
+}
+
+// When no controller claims the devpath via IsSysPathRAID, resolveDiskType
+// skips the RAID path entirely and classifies the disk via udev.
+func TestResolveDiskType_NoRAIDMatchFallsThroughToUdev(t *testing.T) {
+	ast := assert.New(t)
+	mock := &mockRAIDController{
+		isSysPathRAID: false,
+	}
+
+	ls := &linuxSystem{raidctrls: []RAIDController{mock}}
+
+	dType, onRAID, err := ls.resolveDiskType("/dev/nvme0n1",
+		udevInfoFallbackStub("/devices/pci/host0/block/nvme0n1"))
+	ast.NoError(err)
+	ast.False(onRAID)
+	ast.False(mock.getDiskTypeCalled)
+	ast.Equal(disko.NVME, dType)
+}
+
+// Once a matching controller reports ErrNotVirtualDrive, iteration stops (a
+// JBOD on one HBA cannot simultaneously be a VD on another) and we fall
+// through to the udev classifier exactly once.
+func TestResolveDiskType_MultiControllerJBODStopsIteration(t *testing.T) {
+	ast := assert.New(t)
+
+	first := &mockRAIDController{
+		err:           disko.ErrNotVirtualDrive,
+		isSysPathRAID: true,
+	}
+	second := &mockRAIDController{
+		diskType:      disko.SSD,
+		isSysPathRAID: true,
+	}
+
+	ls := &linuxSystem{raidctrls: []RAIDController{first, second}}
+
+	dType, onRAID, err := ls.resolveDiskType("/dev/nvme0n1",
+		udevInfoFallbackStub("/devices/pci/host0/block/nvme0n1"))
+	ast.NoError(err)
+	ast.False(onRAID)
+	ast.True(first.getDiskTypeCalled)
+	ast.False(second.getDiskTypeCalled, "second controller should not be consulted after JBOD break")
+	ast.Equal(disko.NVME, dType)
+}
+
+// A system with no RAID controllers configured still classifies disks via
+// udev and never reports onRAID=true.
+func TestResolveDiskType_NoControllersConfiguredUsesUdev(t *testing.T) {
+	ast := assert.New(t)
+
+	ls := &linuxSystem{raidctrls: []RAIDController{}}
+
+	dType, onRAID, err := ls.resolveDiskType("/dev/nvme0n1",
+		udevInfoFallbackStub("/devices/pci/host0/block/nvme0n1"))
+	ast.NoError(err)
+	ast.False(onRAID)
+	ast.Equal(disko.NVME, dType)
 }

@@ -2,9 +2,14 @@ package megaraid
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/patrickmn/go-cache"
+	"machinerun.io/disko"
 )
 
 var tableData1 = `
@@ -1163,6 +1168,119 @@ SCSI NAA Id = 6cc167e9730322c027dd6c90047c42a1
 Unmap Enabled = No
 `
 
+// Cisco 12G Modular Raid Controller with all JBOD drives and no virtual drives.
+// Captured from a real system running megaraid_sas with
+// FW 5.190.00-3697. All five disks are in JBOD mode (1 SSD + 4 HDD).
+var ciscoJBODCxShow = `
+Generating detailed summary of the adapter, it may take a while to complete.
+
+CLI Version = 007.1907.0000.0000 Sep 13, 2021
+Operating system = Linux 6.6.0
+Controller = 0
+Status = Success
+Description = None
+
+Product Name = Cisco 12G Modular Raid Controller with 2GB cache (max 16 drives)
+Serial Number = SKXXXXXXXX
+SAS Address =  0000000000000000
+PCI Address = 00:3c:00:00
+System Time = 04/18/2026 07:25:04
+Mfg. Date = 07/23/22
+Controller Time = 04/18/2026 07:24:48
+FW Package Build = 51.19.0-4532
+BIOS Version = 7.19.00.0_0x07130200
+FW Version = 5.190.00-3697
+Driver Name = megaraid_sas
+Driver Version = 07.725.01.00-rc1
+Current Personality = RAID-Mode
+Vendor Id = 0x1000
+Device Id = 0x14
+SubVendor Id = 0x1137
+SubDevice Id = 0x20E
+Host Interface = PCI-E
+Device Interface = SAS-12G
+Bus Number = 60
+Device Number = 0
+Function Number = 0
+Domain ID = 0
+Security Protocol = None
+JBOD Drives = 5
+
+JBOD LIST :
+=========
+
+------------------------------------------------------------------------------
+EID:Slt DID State DG       Size Intf Med SED PI SeSz Model            Sp Type
+------------------------------------------------------------------------------
+134:2     1 JBOD  -  745.211 GB SAS  SSD N   N  512B KPM6XVUG800G     U  -
+134:3     0 JBOD  -    2.182 TB SAS  HDD N   N  4 KB AL15SEB24EP      U  -
+134:4     3 JBOD  -    2.182 TB SAS  HDD N   N  4 KB AL15SEB24EP      U  -
+134:5     2 JBOD  -    2.182 TB SAS  HDD N   N  4 KB AL15SEB24EP      U  -
+134:6     4 JBOD  -    2.182 TB SAS  HDD N   N  4 KB AL15SEB24EP      U  -
+------------------------------------------------------------------------------
+
+ID=JBOD Target ID|EID=Enclosure Device ID|Slt=Slot No|DID=Device ID|Onln=Online
+Offln=Offline|Intf=Interface|Med=Media Type|SeSz=Sector Size
+SED=Self Encryptive Drive|PI=Protection Info|Sp=Spun|U=Up|D=Down
+
+Physical Drives = 5
+
+PD LIST :
+=======
+
+------------------------------------------------------------------------------
+EID:Slt DID State DG       Size Intf Med SED PI SeSz Model            Sp Type
+------------------------------------------------------------------------------
+134:2     1 JBOD  -  745.211 GB SAS  SSD N   N  512B KPM6XVUG800G     U  -
+134:3     0 JBOD  -    2.182 TB SAS  HDD N   N  4 KB AL15SEB24EP      U  -
+134:4     3 JBOD  -    2.182 TB SAS  HDD N   N  4 KB AL15SEB24EP      U  -
+134:5     2 JBOD  -    2.182 TB SAS  HDD N   N  4 KB AL15SEB24EP      U  -
+134:6     4 JBOD  -    2.182 TB SAS  HDD N   N  4 KB AL15SEB24EP      U  -
+------------------------------------------------------------------------------
+
+EID=Enclosure Device ID|Slt=Slot No|DID=Device ID|DG=DriveGroup
+DHS=Dedicated Hot Spare|UGood=Unconfigured Good|GHS=Global Hotspare
+UBad=Unconfigured Bad|Sntze=Sanitize|Onln=Online|Offln=Offline|Intf=Interface
+Med=Media Type|SED=Self Encryptive Drive|PI=Protection Info
+SeSz=Sector Size|Sp=Spun|U=Up|D=Down|T=Transition|F=Foreign
+UGUnsp=UGood Unsupported|UGShld=UGood shielded|HSPShld=Hotspare shielded
+CFShld=Configured shielded|Cpybck=CopyBack|CBShld=Copyback Shielded
+UBUnsp=UBad Unsupported|Rbld=Rebuild
+
+Enclosures = 1
+
+Enclosure LIST :
+==============
+
+------------------------------------------------------------------------
+EID State Slots PD PS Fans TSs Alms SIM Port# ProdID     VendorSpecific
+------------------------------------------------------------------------
+134 OK       16  5  0    0   0    0   0 -     VirtualSES
+------------------------------------------------------------------------
+
+EID=Enclosure Device ID | PD=Physical drive count | PS=Power Supply count
+TSs=Temperature sensor count | Alms=Alarm count | SIM=SIM Count | ProdID=Product ID
+
+
+Cachevault_Info :
+===============
+
+------------------------------------
+Model  State   Temp Mode MfgDate
+------------------------------------
+CVPM05 Optimal 25C  -    2022/05/21
+------------------------------------
+
+`
+
+var ciscoJBODCxVallShowAll = `
+CLI Version = 007.1907.0000.0000 Sep 13, 2021
+Operating system = Linux 6.6.0
+Controller = 0
+Status = Success
+Description = No VD's have been configured.
+`
+
 // this has a 'F' for a DriveGroup (foreign)
 // it is put together from old '/c0/dall show' output to
 // look like '/c0 show all' would.
@@ -1289,3 +1407,132 @@ Model  State   Temp Mode MfgDate
 CVPM05 Optimal 34C  -    2018/10/16
 ------------------------------------
 `
+
+func TestParseCxShowCiscoJBOD(t *testing.T) {
+	vds, pds, err := parseCxShow(ciscoJBODCxShow)
+	if err != nil {
+		t.Fatalf("parseCxShow(ciscoJBODCxShow) returned error: %s", err)
+	}
+
+	if len(vds) != 0 {
+		t.Errorf("expected 0 virtual drives, got %d", len(vds))
+	}
+
+	if len(pds) != 5 {
+		t.Errorf("expected 5 physical drives, got %d", len(pds))
+	}
+
+	for _, pd := range pds {
+		if pd.State != "JBOD" {
+			t.Errorf("drive %d: expected State=JBOD, got %q", pd.ID, pd.State)
+		}
+
+		if pd.DriveGroup != -1 {
+			t.Errorf("drive %d: expected DriveGroup=-1 (JBOD), got %d", pd.ID, pd.DriveGroup)
+		}
+	}
+
+	ssd := pds[1]
+	if ssd.MediaType != SSD {
+		t.Errorf("drive 1 (slot 2): expected SSD, got %s", ssd.MediaType)
+	}
+
+	hdd := pds[0]
+	if hdd.MediaType != HDD {
+		t.Errorf("drive 0 (slot 3): expected HDD, got %s", hdd.MediaType)
+	}
+}
+
+func TestParseVirtPropertiesCiscoJBOD(t *testing.T) {
+	propMap, err := parseVirtProperties(ciscoJBODCxVallShowAll)
+	if err != nil {
+		t.Fatalf("parseVirtProperties(ciscoJBODCxVallShowAll) returned error: %s", err)
+	}
+
+	if len(propMap) != 0 {
+		t.Errorf("expected 0 VD properties, got %d", len(propMap))
+	}
+}
+
+func TestNewControllerCiscoJBOD(t *testing.T) {
+	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll)
+	if err != nil {
+		t.Fatalf("newController failed: %s", err)
+	}
+
+	if ctrl.ID != 0 {
+		t.Errorf("expected controller ID 0, got %d", ctrl.ID)
+	}
+
+	if len(ctrl.VirtDrives) != 0 {
+		t.Errorf("expected 0 VirtDrives, got %d", len(ctrl.VirtDrives))
+	}
+
+	if len(ctrl.Drives) != 5 {
+		t.Errorf("expected 5 Drives, got %d", len(ctrl.Drives))
+	}
+
+	if len(ctrl.DriveGroups) != 0 {
+		t.Errorf("expected 0 DriveGroups (JBOD has no drive groups), got %d", len(ctrl.DriveGroups))
+	}
+}
+
+type mockMegaRaid struct {
+	ctrl Controller
+	err  error
+}
+
+func (m *mockMegaRaid) Query(cID int) (Controller, error) {
+	return m.ctrl, m.err
+}
+
+func (m *mockMegaRaid) GetDiskType(path string) (disko.DiskType, error) {
+	return disko.HDD, nil
+}
+
+func (m *mockMegaRaid) DriverSysfsPath() string {
+	return "/sys/bus/pci/drivers/megaraid_sas"
+}
+
+func (m *mockMegaRaid) IsSysPathRAID(syspath string) bool {
+	return true
+}
+
+func TestGetDiskTypeJBODReturnsErrNotVirtualDrive(t *testing.T) {
+	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll)
+	if err != nil {
+		t.Fatalf("newController failed: %s", err)
+	}
+
+	csc := &cachingStorCli{
+		mr:    &mockMegaRaid{ctrl: ctrl, err: nil},
+		cache: cache.New(5*time.Minute, 5*time.Minute),
+	}
+
+	for _, path := range []string{"/dev/sda", "/dev/sdb", "/dev/sdc"} {
+		dtype, err := csc.GetDiskType(path)
+		if !errors.Is(err, disko.ErrNotVirtualDrive) {
+			t.Errorf("GetDiskType(%q): expected ErrNotVirtualDrive, got %v", path, err)
+		}
+
+		if dtype != disko.HDD {
+			t.Errorf("GetDiskType(%q): expected HDD default, got %d", path, dtype)
+		}
+	}
+}
+
+func TestGetDiskTypeQueryFailureNotSentinel(t *testing.T) {
+	csc := &cachingStorCli{
+		mr:    &mockMegaRaid{ctrl: Controller{}, err: ErrNoStorcli},
+		cache: cache.New(5*time.Minute, 5*time.Minute),
+	}
+
+	_, err := csc.GetDiskType("/dev/sda")
+	if errors.Is(err, disko.ErrNotVirtualDrive) {
+		t.Error("GetDiskType should NOT return ErrNotVirtualDrive when storcli is missing")
+	}
+
+	if err == nil {
+		t.Error("GetDiskType should return an error when storcli is missing")
+	}
+}

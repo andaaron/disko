@@ -11,6 +11,7 @@ import (
 
 	"github.com/pkg/errors"
 	"machinerun.io/disko"
+	"machinerun.io/disko/linux/sysfs"
 )
 
 // parse JSON from 'storcli2 show nolog J' for List() method
@@ -602,32 +603,46 @@ func (sc *storCli2) GetDiskType(path string) (disko.DiskType, error) {
 		return disko.HDD, errors.Errorf("failed to get controller list: %s", err)
 	}
 
-	errors := []error{}
+	// isPhysical becomes true once we have successfully inspected at least one
+	// controller. If we then finish the loop without matching path against any
+	// VirtualDrive, we know the device is visible through the HBA but is not a
+	// configured virtual drive -- i.e. it is a physical/passthrough (JBOD) disk.
+	isPhysical := false
+	queryErrs := []error{}
+
 	for _, cID := range cIDs {
 		ctrl, err := sc.Query(cID)
 		if err != nil {
-			errors = append(errors, fmt.Errorf("error while getting config for controller id:%d %s", cID, err))
+			queryErrs = append(queryErrs, fmt.Errorf("error while getting config for controller id:%d %s", cID, err))
 			continue
 		}
-		for _, vDev := range ctrl.VirtualDrives {
-			if vDev.Path() == path && vDev.IsSSD() {
-				return disko.SSD, nil
-			}
 
-			return disko.HDD, nil
+		isPhysical = true
+
+		for _, vDev := range ctrl.VirtualDrives {
+			if vDev.Path() == path {
+				if vDev.IsSSD() {
+					return disko.SSD, nil
+				}
+
+				return disko.HDD, nil
+			}
 		}
 	}
 
-	for _, err := range errors {
+	for _, err := range queryErrs {
 		if err != ErrNoStor2cli && err != ErrNoController && err != ErrUnsupported {
 			return disko.HDD, err
 		}
 	}
 
-	return disko.HDD, fmt.Errorf("cannot determine diskt type for path %q", path)
+	if isPhysical {
+		return disko.HDD, disko.ErrNotVirtualDrive
+	}
+
+	return disko.HDD, fmt.Errorf("cannot determine disk type for path %q", path)
 }
 
-// not implemented in driver layer
 func (sc *storCli2) IsSysPathRAID(syspath string) bool {
-	return false
+	return sysfs.IsSysPathRAID(syspath, sc.DriverSysfsPath())
 }

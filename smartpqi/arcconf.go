@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"machinerun.io/disko"
+	"machinerun.io/disko/linux/sysfs"
 )
 
 const (
@@ -495,13 +496,21 @@ func (ac *arcConf) GetDiskType(path string) (disko.DiskType, error) {
 		return disko.HDD, fmt.Errorf("failed to enumerate controllers: %s", err)
 	}
 
-	errors := []error{}
+	// isPhysical becomes true once we have successfully inspected at least one
+	// controller. If we then finish the loop without matching path against any
+	// LogicalDrive, we know the device is visible through the HBA but is not a
+	// configured logical drive -- i.e. it is a physical/passthrough (JBOD) disk.
+	isPhysical := false
+	queryErrs := []error{}
+
 	for _, cID := range cIDs {
 		ctrl, err := ac.GetConfig(cID)
 		if err != nil {
-			errors = append(errors, fmt.Errorf("error while getting config for controller id:%d: %s", cID, err))
+			queryErrs = append(queryErrs, fmt.Errorf("error while getting config for controller id:%d: %s", cID, err))
 			continue
 		}
+
+		isPhysical = true
 
 		for _, lDrive := range ctrl.LogicalDrives {
 			if lDrive.DiskName == path {
@@ -514,10 +523,14 @@ func (ac *arcConf) GetDiskType(path string) (disko.DiskType, error) {
 		}
 	}
 
-	for _, err := range errors {
+	for _, err := range queryErrs {
 		if err != ErrNoArcconf && err != ErrNoController && err != ErrUnsupported {
 			return disko.HDD, err
 		}
+	}
+
+	if isPhysical {
+		return disko.HDD, disko.ErrNotVirtualDrive
 	}
 
 	return disko.HDD, fmt.Errorf("cannot determine disk type")
@@ -527,9 +540,8 @@ func (ac *arcConf) DriverSysfsPath() string {
 	return SysfsPCIDriversPath
 }
 
-// not implemented at the driver level
 func (ac *arcConf) IsSysPathRAID(path string) bool {
-	return false
+	return sysfs.IsSysPathRAID(path, ac.DriverSysfsPath())
 }
 
 func (ac *arcConf) GetConfig(cID int) (Controller, error) {
