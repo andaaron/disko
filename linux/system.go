@@ -313,7 +313,17 @@ func (ls *linuxSystem) resolveDiskType(devicePath string, udInfo disko.UdevInfo)
 				break
 			}
 
-			return disko.HDD, false, fmt.Errorf("failed to get diskType of %q from RAID controller: %s", devicePath, err)
+			return disko.Unknown, false, fmt.Errorf("failed to get diskType of %q from RAID controller: %s", devicePath, err)
+		}
+
+		// Defense in depth: disko.Unknown is an internal-only
+		// placeholder paired with a non-nil error. If a driver returns
+		// it with err == nil it has broken contract; surface as hard
+		// error rather than silently leak Unknown into disko.Disk.Type.
+		if dType == disko.Unknown {
+			return disko.Unknown, false, fmt.Errorf(
+				"RAID controller returned disko.Unknown with nil error for %q; driver contract violated",
+				devicePath)
 		}
 
 		return dType, true, nil
@@ -321,7 +331,7 @@ func (ls *linuxSystem) resolveDiskType(devicePath string, udInfo disko.UdevInfo)
 
 	dType, err := getDiskType(udInfo)
 	if err != nil {
-		return disko.HDD, false, err
+		return disko.Unknown, false, err
 	}
 
 	return dType, false, nil

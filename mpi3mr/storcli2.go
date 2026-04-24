@@ -608,9 +608,9 @@ func (sc *storCli2) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskT
 	cIDs, err := sc.List()
 	if err != nil {
 		if isSoftStorCli2Err(err) {
-			return disko.HDD, disko.ErrDiskTypeUndetermined
+			return disko.Unknown, disko.ErrDiskTypeUndetermined
 		}
-		return disko.HDD, errors.Errorf("failed to get controller list: %s", err)
+		return disko.Unknown, errors.Errorf("failed to get controller list: %s", err)
 	}
 
 	var queryErrs []error
@@ -638,7 +638,7 @@ func (sc *storCli2) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskT
 
 	for _, err := range queryErrs {
 		if !isSoftStorCli2Err(err) {
-			return disko.HDD, err
+			return disko.Unknown, err
 		}
 	}
 
@@ -649,7 +649,7 @@ func (sc *storCli2) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskT
 		return dType, nil
 	}
 
-	return disko.HDD, disko.ErrDiskTypeUndetermined
+	return disko.Unknown, disko.ErrDiskTypeUndetermined
 }
 
 // isSoftStorCli2Err returns true when err indicates that storcli2 simply
@@ -667,17 +667,17 @@ func isSoftStorCli2Err(err error) bool {
 // missing kname, non-SCSI device, PID collision, or unknown medium.
 func (sc *storCli2) jbodDiskTypeFromSCSI(ctrls []Controller, udInfo disko.UdevInfo) (disko.DiskType, bool) {
 	if sc.scsiTargetFn == nil {
-		return disko.HDD, false
+		return disko.Unknown, false
 	}
 
 	kname := udInfo.Name
 	if kname == "" {
-		return disko.HDD, false
+		return disko.Unknown, false
 	}
 
 	target, ok, err := sc.scsiTargetFn(sc.sysRoot, kname)
 	if err != nil || !ok {
-		return disko.HDD, false
+		return disko.Unknown, false
 	}
 
 	var matches []PhysicalDrive
@@ -690,7 +690,7 @@ func (sc *storCli2) jbodDiskTypeFromSCSI(ctrls []Controller, udInfo disko.UdevIn
 	}
 
 	if len(matches) != 1 {
-		return disko.HDD, false
+		return disko.Unknown, false
 	}
 
 	switch strings.ToUpper(strings.TrimSpace(matches[0].Medium)) {
@@ -700,5 +700,5 @@ func (sc *storCli2) jbodDiskTypeFromSCSI(ctrls []Controller, udInfo disko.UdevIn
 		return disko.HDD, true
 	}
 
-	return disko.HDD, false
+	return disko.Unknown, false
 }

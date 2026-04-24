@@ -320,7 +320,7 @@ func TestGetDiskTypeRAIDMatchSSD(t *testing.T) {
 func TestGetDiskTypeJBODFallback(t *testing.T) {
 	ast := assert.New(t)
 	mock := &mockRAIDController{
-		diskType:      disko.HDD,
+		diskType:      disko.Unknown,
 		err:           disko.ErrDiskTypeUndetermined,
 		sysfsPath:     "/sys/bus/pci/drivers/megaraid_sas",
 		isSysPathRAID: true,
@@ -348,7 +348,7 @@ func TestGetDiskTypeWrappedSentinelFallback(t *testing.T) {
 	wrappedErr := fmt.Errorf("controller 0: %w", disko.ErrDiskTypeUndetermined)
 
 	mock := &mockRAIDController{
-		diskType:      disko.HDD,
+		diskType:      disko.Unknown,
 		err:           wrappedErr,
 		sysfsPath:     "/sys/bus/pci/drivers/megaraid_sas",
 		isSysPathRAID: true,
@@ -364,7 +364,7 @@ func TestGetDiskTypeWrappedSentinelFallback(t *testing.T) {
 func TestGetDiskTypeRAIDRealError(t *testing.T) {
 	ast := assert.New(t)
 	mock := &mockRAIDController{
-		diskType:      disko.HDD,
+		diskType:      disko.Unknown,
 		err:           fmt.Errorf("storcli binary crashed"),
 		sysfsPath:     "/sys/bus/pci/drivers/megaraid_sas",
 		isSysPathRAID: true,
@@ -401,7 +401,7 @@ func TestGetDiskTypeMultiControllerJBODFallback(t *testing.T) {
 	ast := assert.New(t)
 
 	megaraidMock := &mockRAIDController{
-		diskType:      disko.HDD,
+		diskType:      disko.Unknown,
 		err:           disko.ErrDiskTypeUndetermined,
 		sysfsPath:     "/sys/bus/pci/drivers/megaraid_sas",
 		isSysPathRAID: true,
@@ -583,4 +583,27 @@ func TestResolveDiskType_NoControllersConfiguredUsesUdev(t *testing.T) {
 	ast.NoError(err)
 	ast.False(onRAID)
 	ast.Equal(disko.NVME, dType)
+}
+
+// disko.Unknown is reserved for error paths; a driver that returns it
+// with err == nil has violated the contract. resolveDiskType must catch
+// this and surface a hard error rather than let Unknown reach callers.
+func TestResolveDiskType_UnknownWithNilErrorIsRejected(t *testing.T) {
+	ast := assert.New(t)
+	mock := &mockRAIDController{
+		diskType:      disko.Unknown,
+		err:           nil,
+		sysfsPath:     "/sys/bus/pci/drivers/megaraid_sas",
+		isSysPathRAID: true,
+	}
+
+	ls := newTestLinuxSystem(mock)
+
+	dType, onRAID, err := ls.resolveDiskType("/dev/sda",
+		disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}})
+	ast.Error(err)
+	ast.Contains(err.Error(), "disko.Unknown")
+	ast.Contains(err.Error(), "contract violated")
+	ast.False(onRAID)
+	ast.Equal(disko.Unknown, dType)
 }

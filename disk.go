@@ -33,19 +33,28 @@ const (
 
 	// TYPEFILE - A file on disk, not a block device.
 	TYPEFILE
+
+	// Unknown is an internal disko placeholder returned alongside a
+	// non-nil error by RAID-controller drivers when they cannot classify
+	// a device. It MUST NOT leak out of disko onto disko.Disk.Type: the
+	// linux system layer either consumes it via udev fallback or
+	// propagates the accompanying error. External callers should never
+	// observe this value.
+	Unknown
 )
 
 func (t DiskType) String() string {
-	return []string{"HDD", "SSD", "NVME", "FILE"}[t]
+	return []string{"HDD", "SSD", "NVME", "FILE", "UNKNOWN"}[t]
 }
 
 // StringToDiskType - convert a string to a disk type.
 func StringToDiskType(typeStr string) DiskType {
 	kmap := map[string]DiskType{
-		"HDD":  HDD,
-		"SSD":  SSD,
-		"NVME": NVME,
-		"FILE": TYPEFILE,
+		"HDD":     HDD,
+		"SSD":     SSD,
+		"NVME":    NVME,
+		"FILE":    TYPEFILE,
+		"UNKNOWN": Unknown,
 	}
 	if dtype, ok := kmap[typeStr]; ok {
 		return dtype

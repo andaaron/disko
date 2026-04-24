@@ -494,9 +494,9 @@ func (ac *arcConf) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskTy
 	cIDs, err := ac.List()
 	if err != nil {
 		if isSoftArcconfErr(err) {
-			return disko.HDD, disko.ErrDiskTypeUndetermined
+			return disko.Unknown, disko.ErrDiskTypeUndetermined
 		}
-		return disko.HDD, fmt.Errorf("failed to enumerate controllers: %s", err)
+		return disko.Unknown, fmt.Errorf("failed to enumerate controllers: %w", err)
 	}
 
 	var queryErrs []error
@@ -524,7 +524,7 @@ func (ac *arcConf) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskTy
 
 	for _, err := range queryErrs {
 		if !isSoftArcconfErr(err) {
-			return disko.HDD, err
+			return disko.Unknown, err
 		}
 	}
 
@@ -535,7 +535,7 @@ func (ac *arcConf) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskTy
 		return dType, nil
 	}
 
-	return disko.HDD, disko.ErrDiskTypeUndetermined
+	return disko.Unknown, disko.ErrDiskTypeUndetermined
 }
 
 // isSoftArcconfErr returns true when err indicates that arcconf simply
@@ -554,7 +554,7 @@ func isSoftArcconfErr(err error) bool {
 func jbodDiskTypeFromSerial(ctrls []Controller, udInfo disko.UdevInfo) (disko.DiskType, bool) {
 	serials := collectUdevSerials(udInfo)
 	if len(serials) == 0 {
-		return disko.HDD, false
+		return disko.Unknown, false
 	}
 
 	var matches []*PhysicalDevice
@@ -574,7 +574,7 @@ func jbodDiskTypeFromSerial(ctrls []Controller, udInfo disko.UdevInfo) (disko.Di
 	}
 
 	if len(matches) != 1 {
-		return disko.HDD, false
+		return disko.Unknown, false
 	}
 
 	switch matches[0].Type {
@@ -586,7 +586,7 @@ func jbodDiskTypeFromSerial(ctrls []Controller, udInfo disko.UdevInfo) (disko.Di
 		return disko.NVME, true
 	}
 
-	return disko.HDD, false
+	return disko.Unknown, false
 }
 
 // collectUdevSerials returns the udev tokens to match against

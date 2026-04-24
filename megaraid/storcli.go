@@ -89,7 +89,7 @@ func (sc *storCli) DriverSysfsPath() string {
 }
 
 func (sc *storCli) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskType, error) {
-	return disko.HDD, fmt.Errorf("missing controller to run query")
+	return disko.Unknown, fmt.Errorf("missing controller to run query")
 }
 
 func newController(cID int, cxDxOut, cxVxOut, cxEallSallOut string) (Controller, error) {
@@ -703,9 +703,9 @@ func (csc *cachingStorCli) GetDiskType(path string, udInfo disko.UdevInfo) (disk
 		if isSoftStorCliErr(err) {
 			// Controller tool unavailable or no controller. Fall
 			// through with the sentinel so the caller uses udev.
-			return disko.HDD, disko.ErrDiskTypeUndetermined
+			return disko.Unknown, disko.ErrDiskTypeUndetermined
 		}
-		return disko.HDD, err
+		return disko.Unknown, err
 	}
 
 	for _, vd := range ctrl.VirtDrives {
@@ -725,7 +725,7 @@ func (csc *cachingStorCli) GetDiskType(path string, udInfo disko.UdevInfo) (disk
 		return dType, nil
 	}
 
-	return disko.HDD, disko.ErrDiskTypeUndetermined
+	return disko.Unknown, disko.ErrDiskTypeUndetermined
 }
 
 // isSoftStorCliErr returns true when err indicates that storcli simply
@@ -744,7 +744,7 @@ func isSoftStorCliErr(err error) bool {
 func jbodDiskTypeFromSerial(ctrl Controller, udInfo disko.UdevInfo) (disko.DiskType, bool) {
 	serials := collectUdevSerials(udInfo)
 	if len(serials) == 0 {
-		return disko.HDD, false
+		return disko.Unknown, false
 	}
 
 	var matches []*Drive
@@ -762,7 +762,7 @@ func jbodDiskTypeFromSerial(ctrl Controller, udInfo disko.UdevInfo) (disko.DiskT
 	}
 
 	if len(matches) != 1 {
-		return disko.HDD, false
+		return disko.Unknown, false
 	}
 
 	switch matches[0].MediaType {
@@ -773,10 +773,10 @@ func jbodDiskTypeFromSerial(ctrl Controller, udInfo disko.UdevInfo) (disko.DiskT
 	case NVME:
 		return disko.NVME, true
 	case UnknownMedia:
-		return disko.HDD, false
+		return disko.Unknown, false
 	}
 
-	return disko.HDD, false
+	return disko.Unknown, false
 }
 
 // collectUdevSerials returns the udev tokens to match against

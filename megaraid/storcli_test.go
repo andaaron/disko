@@ -1653,8 +1653,8 @@ func TestGetDiskTypeJBODReturnsErrDiskTypeUndetermined(t *testing.T) {
 			t.Errorf("GetDiskType(%q): expected ErrDiskTypeUndetermined, got %v", path, err)
 		}
 
-		if dtype != disko.HDD {
-			t.Errorf("GetDiskType(%q): expected HDD default, got %d", path, dtype)
+		if dtype != disko.Unknown {
+			t.Errorf("GetDiskType(%q): expected disko.Unknown placeholder, got %d", path, dtype)
 		}
 	}
 }
