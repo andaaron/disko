@@ -15,6 +15,7 @@ import (
 
 	"github.com/pkg/errors"
 	"machinerun.io/disko"
+	"machinerun.io/disko/linux/sysfs"
 )
 
 // GetUdevInfo return a UdevInfo for the device with kernel name kname.
@@ -291,6 +292,16 @@ func Floor(val, unit uint64) uint64 {
 	return (val / unit) * unit
 }
 
+// IsSysPathRAID checks whether syspath (udevadm DEVPATH) belongs to a RAID
+// controller whose PCI driver is registered at driverSysPath.
+//
+// Deprecated: use sysfs.IsSysPathRAID from machinerun.io/disko/linux/sysfs
+// instead. This wrapper exists only for backwards compatibility with callers
+// that import the top-level linux package.
+func IsSysPathRAID(syspath string, driverSysPath string) bool {
+	return sysfs.IsSysPathRAID(syspath, driverSysPath)
+}
+
 // NameByDiskID - return the linux name (sda) for the disk with given DiskID
 func NameByDiskID(driverSysPath string, id int) (string, error) {
 	// given ID, we expect a single file in:
@@ -310,4 +321,13 @@ func NameByDiskID(driverSysPath string, id int) (string, error) {
 	}
 
 	return path.Base(matches[0]), nil
+}
+
+// GetSysPaths returns the resolved PCI device paths for a RAID driver.
+//
+// Deprecated: use sysfs.GetSysPaths from machinerun.io/disko/linux/sysfs
+// instead. This wrapper exists only for backwards compatibility with callers
+// that import the top-level linux package.
+func GetSysPaths(driverSysPath string) []string {
+	return sysfs.GetSysPaths(driverSysPath)
 }

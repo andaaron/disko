@@ -1,4 +1,4 @@
-package megaraid
+package sysfs
 
 import (
 	"os"
@@ -32,7 +32,7 @@ func TestReadSCSITargetJBOD(t *testing.T) {
 	root := t.TempDir()
 	makeBlockDeviceSymlink(t, root, "sdb", "0:2:3:0")
 
-	target, ok, err := readSCSITarget(root, "sdb")
+	target, ok, err := ReadSCSITarget(root, "sdb")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
@@ -45,7 +45,7 @@ func TestReadSCSITargetJBOD(t *testing.T) {
 }
 
 // An NVMe/virtio-style block device has no H:C:T:L "device" symlink.
-// readSCSITarget must report ok=false (not an error) so the caller can
+// ReadSCSITarget must report ok=false (not an error) so the caller can
 // fall through to generic udev detection.
 func TestReadSCSITargetNoDevice(t *testing.T) {
 	root := t.TempDir()
@@ -53,7 +53,7 @@ func TestReadSCSITargetNoDevice(t *testing.T) {
 		t.Fatalf("mkdir: %s", err)
 	}
 
-	_, ok, err := readSCSITarget(root, "nvme0n1")
+	_, ok, err := ReadSCSITarget(root, "nvme0n1")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
@@ -63,7 +63,7 @@ func TestReadSCSITargetNoDevice(t *testing.T) {
 }
 
 // A symlink whose last segment isn't H:C:T:L (e.g. points at a PCI node) must
-// not be mistaken for a SCSI device. readSCSITarget returns ok=false with no
+// not be mistaken for a SCSI device. ReadSCSITarget returns ok=false with no
 // error so the caller falls through to udev.
 func TestReadSCSITargetNonHCTL(t *testing.T) {
 	root := t.TempDir()
@@ -80,7 +80,7 @@ func TestReadSCSITargetNonHCTL(t *testing.T) {
 		t.Fatalf("symlink: %s", err)
 	}
 
-	_, ok, err := readSCSITarget(root, "vda")
+	_, ok, err := ReadSCSITarget(root, "vda")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
@@ -93,7 +93,7 @@ func TestReadSCSITargetBadTarget(t *testing.T) {
 	root := t.TempDir()
 	makeBlockDeviceSymlink(t, root, "sdc", "0:2:notanum:0")
 
-	_, ok, err := readSCSITarget(root, "sdc")
+	_, ok, err := ReadSCSITarget(root, "sdc")
 	if err == nil {
 		t.Fatalf("expected parse error, got nil")
 	}
@@ -103,7 +103,7 @@ func TestReadSCSITargetBadTarget(t *testing.T) {
 }
 
 func TestReadSCSITargetEmptyKname(t *testing.T) {
-	_, ok, err := readSCSITarget("/sys", "")
+	_, ok, err := ReadSCSITarget("/sys", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}

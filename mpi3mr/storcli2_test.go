@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"machinerun.io/disko"
+	"machinerun.io/disko/linux/sysfs"
 )
 
 var showNoLogJData = `
@@ -559,7 +560,7 @@ func TestStorCli2JBODDiskTypeLookupError(t *testing.T) {
 
 // Empty udev Name short-circuits before any sysfs call.
 func TestStorCli2JBODDiskTypeEmptyName(t *testing.T) {
-	sc := &storCli2{sysRoot: "/unused", scsiTargetFn: readSCSITarget}
+	sc := &storCli2{sysRoot: "/unused", scsiTargetFn: sysfs.ReadSCSITarget}
 
 	if _, ok := sc.jbodDiskTypeFromSCSI([]Controller{jbodPhysCtrl()}, disko.UdevInfo{}); ok {
 		t.Errorf("expected ok=false when udev Name is empty")

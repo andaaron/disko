@@ -1,4 +1,4 @@
-package megaraid
+package sysfs
 
 import (
 	"errors"
@@ -9,13 +9,16 @@ import (
 	"strings"
 )
 
-// readSCSITarget returns T from /sys/block/<kname>/device -> H:C:T:L.
-// On megaraid_sas JBODs, T equals storcli's Drive.DID.
+// ReadSCSITarget returns T from /sys/block/<kname>/device -> H:C:T:L.
+// For SCSI-attached JBOD/passthrough disks behind a RAID HBA, T matches
+// the controller-reported drive ID (megaraid Drive.DID, mpi3mr
+// PhysicalDrive.PID), which lets callers correlate a Linux block device
+// with an entry in the controller's PD list.
 //
 // ok=false (nil err) for non-SCSI devices (no "device" symlink, link does
 // not end in H:C:T:L, e.g. NVMe, virtio). sysRoot is injectable for tests;
 // production passes "/sys".
-func readSCSITarget(sysRoot, kname string) (target int, ok bool, err error) {
+func ReadSCSITarget(sysRoot, kname string) (target int, ok bool, err error) {
 	if kname == "" {
 		return 0, false, nil
 	}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/pkg/errors"
 	"machinerun.io/disko"
+	"machinerun.io/disko/linux/sysfs"
 )
 
 // parse JSON from 'storcli2 show nolog J' for List() method
@@ -530,7 +531,7 @@ type storCli2 struct {
 func StorCli2() Mpi3mr {
 	return &storCli2{
 		sysRoot:      "/sys",
-		scsiTargetFn: readSCSITarget,
+		scsiTargetFn: sysfs.ReadSCSITarget,
 	}
 }
 

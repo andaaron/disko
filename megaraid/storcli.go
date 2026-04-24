@@ -13,6 +13,7 @@ import (
 
 	"github.com/patrickmn/go-cache"
 	"machinerun.io/disko"
+	"machinerun.io/disko/linux/sysfs"
 )
 
 type storCli struct {
@@ -600,7 +601,7 @@ func CachingStorCli() MegaRaid {
 		mr:           &storCli{},
 		cache:        cache.New(longTime, longTime),
 		sysRoot:      "/sys",
-		scsiTargetFn: readSCSITarget,
+		scsiTargetFn: sysfs.ReadSCSITarget,
 	}
 }
 

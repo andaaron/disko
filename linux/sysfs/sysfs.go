@@ -1,4 +1,8 @@
-package linux
+// Package sysfs contains Linux-specific helpers for inspecting the sysfs
+// hierarchy. The helpers are driver-agnostic so they can be shared by the
+// top-level linux package and by individual RAID driver packages without
+// creating an import cycle back into linux.
+package sysfs
 
 import (
 	"fmt"
