@@ -210,7 +210,7 @@ func TestNewController(t *testing.T) {
 	var exVlen, exPlen, exDGlen = 5, 5, 5
 	var cID = 0
 
-	ctrl, err := newController(cID, sys0CxShow, sys0CxVallShowAll)
+	ctrl, err := newController(cID, sys0CxShow, sys0CxVallShowAll, "")
 	if err != nil {
 		t.Fatalf("newController failed: %s", err)
 	}
@@ -1282,6 +1282,98 @@ Status = Success
 Description = No VD's have been configured.
 `
 
+// Output of 'storcli /c0/eall/sall show all' for the same JBOD setup.
+// Abridged: per drive we keep the summary row and the Device attributes
+// sub-section that carries "SN = ...". Serial numbers are synthetic
+// (SNTEST00N) so this fixture contains no data from real systems.
+var ciscoJBODCxEallSallShowAll = `
+CLI Version = 007.1907.0000.0000 Sep 13, 2021
+Operating system = Linux 6.6.0
+Controller = 0
+Status = Success
+Description = Show Drive Information Succeeded.
+
+
+Drive /c0/e134/s2 :
+=================
+
+------------------------------------------------------------------------------
+EID:Slt DID State DG       Size Intf Med SED PI SeSz Model            Sp Type
+------------------------------------------------------------------------------
+134:2     1 JBOD  -  372.611 GB SAS  SSD N   N  512B TESTMODELSSD1    U  -
+------------------------------------------------------------------------------
+
+
+Drive /c0/e134/s2 Device attributes :
+===================================
+SN = SNTEST001
+Model Number = TESTMODELSSD1
+
+
+Drive /c0/e134/s3 :
+=================
+
+----------------------------------------------------------------------------
+EID:Slt DID State DG     Size Intf Med SED PI SeSz Model            Sp Type
+----------------------------------------------------------------------------
+134:3     0 JBOD  -  2.182 TB SAS  HDD N   N  4 KB TESTMODELHDD1    U  -
+----------------------------------------------------------------------------
+
+
+Drive /c0/e134/s3 Device attributes :
+===================================
+SN = SNTEST002
+Model Number = TESTMODELHDD1
+
+
+Drive /c0/e134/s4 :
+=================
+
+----------------------------------------------------------------------------
+EID:Slt DID State DG     Size Intf Med SED PI SeSz Model            Sp Type
+----------------------------------------------------------------------------
+134:4     3 JBOD  -  2.182 TB SAS  HDD N   N  4 KB TESTMODELHDD1    U  -
+----------------------------------------------------------------------------
+
+
+Drive /c0/e134/s4 Device attributes :
+===================================
+SN = SNTEST003
+Model Number = TESTMODELHDD1
+
+
+Drive /c0/e134/s5 :
+=================
+
+----------------------------------------------------------------------------
+EID:Slt DID State DG     Size Intf Med SED PI SeSz Model            Sp Type
+----------------------------------------------------------------------------
+134:5     2 JBOD  -  2.182 TB SAS  HDD N   N  4 KB TESTMODELHDD1    U  -
+----------------------------------------------------------------------------
+
+
+Drive /c0/e134/s5 Device attributes :
+===================================
+SN = SNTEST004
+Model Number = TESTMODELHDD1
+
+
+Drive /c0/e134/s6 :
+=================
+
+----------------------------------------------------------------------------
+EID:Slt DID State DG     Size Intf Med SED PI SeSz Model            Sp Type
+----------------------------------------------------------------------------
+134:6     4 JBOD  -  2.182 TB SAS  HDD N   N  4 KB TESTMODELHDD1    U  -
+----------------------------------------------------------------------------
+
+
+Drive /c0/e134/s6 Device attributes :
+===================================
+SN = SNTEST005
+Model Number = TESTMODELHDD1
+`
+
 // this has a 'F' for a DriveGroup (foreign)
 // it is put together from old '/c0/dall show' output to
 // look like '/c0 show all' would.
@@ -1456,7 +1548,8 @@ func TestParseVirtPropertiesCiscoJBOD(t *testing.T) {
 }
 
 func TestNewControllerCiscoJBOD(t *testing.T) {
-	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll)
+	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll,
+		ciscoJBODCxEallSallShowAll)
 	if err != nil {
 		t.Fatalf("newController failed: %s", err)
 	}
@@ -1475,6 +1568,52 @@ func TestNewControllerCiscoJBOD(t *testing.T) {
 
 	if len(ctrl.DriveGroups) != 0 {
 		t.Errorf("expected 0 DriveGroups (JBOD has no drive groups), got %d", len(ctrl.DriveGroups))
+	}
+
+	// Drives indexed by DID. Slot 2 is the SSD (DID=1); slot 3 is HDD (DID=0).
+	wantSerials := map[int]string{
+		1: "SNTEST001", // 134:2 SSD
+		0: "SNTEST002", // 134:3 HDD
+		3: "SNTEST003", // 134:4
+		2: "SNTEST004", // 134:5
+		4: "SNTEST005", // 134:6
+	}
+	for did, want := range wantSerials {
+		d := ctrl.Drives[did]
+		if d == nil {
+			t.Fatalf("drive DID=%d missing", did)
+		}
+		if d.SerialNumber != want {
+			t.Errorf("drive DID=%d: SerialNumber=%q, want %q", did, d.SerialNumber, want)
+		}
+	}
+}
+
+func TestParseDriveSerialsCiscoJBOD(t *testing.T) {
+	got, err := parseDriveSerials(ciscoJBODCxEallSallShowAll)
+	if err != nil {
+		t.Fatalf("parseDriveSerials returned error: %s", err)
+	}
+
+	want := map[driveKey]string{
+		{EID: 134, Slot: 2}: "SNTEST001",
+		{EID: 134, Slot: 3}: "SNTEST002",
+		{EID: 134, Slot: 4}: "SNTEST003",
+		{EID: 134, Slot: 5}: "SNTEST004",
+		{EID: 134, Slot: 6}: "SNTEST005",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("parseDriveSerials mismatch:\n got=%v\nwant=%v", got, want)
+	}
+}
+
+func TestParseDriveSerialsEmpty(t *testing.T) {
+	got, err := parseDriveSerials("")
+	if err != nil {
+		t.Fatalf("parseDriveSerials(\"\") returned error: %s", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty map, got %v", got)
 	}
 }
 
@@ -1496,7 +1635,8 @@ func (m *mockMegaRaid) DriverSysfsPath() string {
 }
 
 func TestGetDiskTypeJBODReturnsErrDiskTypeUndetermined(t *testing.T) {
-	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll)
+	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll,
+		ciscoJBODCxEallSallShowAll)
 	if err != nil {
 		t.Fatalf("newController failed: %s", err)
 	}
@@ -1506,6 +1646,7 @@ func TestGetDiskTypeJBODReturnsErrDiskTypeUndetermined(t *testing.T) {
 		cache: cache.New(5*time.Minute, 5*time.Minute),
 	}
 
+	// No udev serial => JBOD matching fails => sentinel for udev fallback.
 	for _, path := range []string{"/dev/sda", "/dev/sdb", "/dev/sdc"} {
 		dtype, err := csc.GetDiskType(path, disko.UdevInfo{})
 		if !errors.Is(err, disko.ErrDiskTypeUndetermined) {
@@ -1549,34 +1690,30 @@ func TestGetDiskTypeHardQueryFailurePropagates(t *testing.T) {
 	}
 }
 
-// newJBODCachingStorCli wires the Cisco JBOD fixture to a stub scsiTargetFn
-// that returns (target, ok) for kname "sdb".
-func newJBODCachingStorCli(t *testing.T, target int, ok bool) *cachingStorCli {
+// newJBODCachingStorCli wires the Cisco JBOD fixture (with serials from
+// the /eall/sall query) to a cachingStorCli for serial-based matching.
+func newJBODCachingStorCli(t *testing.T) *cachingStorCli {
 	t.Helper()
 
-	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll)
+	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll,
+		ciscoJBODCxEallSallShowAll)
 	if err != nil {
 		t.Fatalf("newController failed: %s", err)
 	}
 
 	return &cachingStorCli{
-		mr:      &mockMegaRaid{ctrl: ctrl, err: nil},
-		cache:   cache.New(5*time.Minute, 5*time.Minute),
-		sysRoot: "/unused-in-test",
-		scsiTargetFn: func(_, kname string) (int, bool, error) {
-			if kname == "sdb" {
-				return target, ok, nil
-			}
-			return 0, false, nil
-		},
+		mr:    &mockMegaRaid{ctrl: ctrl, err: nil},
+		cache: cache.New(5*time.Minute, 5*time.Minute),
 	}
 }
 
-// DID=1 is the SSD in the fixture.
-func TestGetDiskTypeJBODSCSITargetMatchSSD(t *testing.T) {
-	csc := newJBODCachingStorCli(t, 1, true)
+// SSD serial (slot 2) resolves via ID_SERIAL_SHORT.
+func TestGetDiskTypeJBODSerialMatchSSD(t *testing.T) {
+	csc := newJBODCachingStorCli(t)
 
-	ud := disko.UdevInfo{Name: "sdb"}
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SERIAL_SHORT": "SNTEST001"},
+	}
 	dtype, err := csc.GetDiskType("/dev/sdb", ud)
 	if err != nil {
 		t.Fatalf("expected nil err for SSD JBOD match, got %v", err)
@@ -1586,11 +1723,13 @@ func TestGetDiskTypeJBODSCSITargetMatchSSD(t *testing.T) {
 	}
 }
 
-// DID=0 is an HDD in the fixture.
-func TestGetDiskTypeJBODSCSITargetMatchHDD(t *testing.T) {
-	csc := newJBODCachingStorCli(t, 0, true)
+// HDD serial (slot 3) resolves via ID_SERIAL_SHORT.
+func TestGetDiskTypeJBODSerialMatchHDD(t *testing.T) {
+	csc := newJBODCachingStorCli(t)
 
-	ud := disko.UdevInfo{Name: "sdb"}
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SERIAL_SHORT": "SNTEST002"},
+	}
 	dtype, err := csc.GetDiskType("/dev/sdb", ud)
 	if err != nil {
 		t.Fatalf("expected nil err for HDD JBOD match, got %v", err)
@@ -1600,35 +1739,73 @@ func TestGetDiskTypeJBODSCSITargetMatchHDD(t *testing.T) {
 	}
 }
 
-// DID not in the fixture falls through to ErrDiskTypeUndetermined.
-func TestGetDiskTypeJBODSCSITargetNoMatch(t *testing.T) {
-	csc := newJBODCachingStorCli(t, 42, true)
+// ID_SERIAL alone (no ID_SERIAL_SHORT) still matches when it equals the SN.
+func TestGetDiskTypeJBODSerialViaIDSerialFallback(t *testing.T) {
+	csc := newJBODCachingStorCli(t)
 
-	ud := disko.UdevInfo{Name: "sdb"}
-	_, err := csc.GetDiskType("/dev/sdb", ud)
-	if !errors.Is(err, disko.ErrDiskTypeUndetermined) {
-		t.Errorf("expected ErrDiskTypeUndetermined for unknown DID, got %v", err)
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SERIAL": "SNTEST001"},
+	}
+	dtype, err := csc.GetDiskType("/dev/sdb", ud)
+	if err != nil {
+		t.Fatalf("expected nil err for ID_SERIAL fallback match, got %v", err)
+	}
+	if dtype != disko.SSD {
+		t.Errorf("GetDiskType: got %v, want SSD", dtype)
 	}
 }
 
-// Unresolvable sysfs H:C:T:L (NVMe, virtio, missing symlink).
-func TestGetDiskTypeJBODSCSITargetUnresolved(t *testing.T) {
-	csc := newJBODCachingStorCli(t, 0, false)
+func TestGetDiskTypeJBODSerialViaIDSCSISerial(t *testing.T) {
+	csc := newJBODCachingStorCli(t)
 
-	ud := disko.UdevInfo{Name: "sdb"}
-	_, err := csc.GetDiskType("/dev/sdb", ud)
-	if !errors.Is(err, disko.ErrDiskTypeUndetermined) {
-		t.Errorf("expected ErrDiskTypeUndetermined when SCSI target is unresolved, got %v", err)
+	ud := disko.UdevInfo{
+		Properties: map[string]string{
+			"ID_SCSI_SERIAL":  "SNTEST001",
+			"ID_SERIAL_SHORT": "deadbeefcafef001",
+			"ID_SERIAL":       "3deadbeefcafef001",
+		},
+	}
+	dtype, err := csc.GetDiskType("/dev/sdb", ud)
+	if err != nil {
+		t.Fatalf("expected nil err for ID_SCSI_SERIAL match, got %v", err)
+	}
+	if dtype != disko.SSD {
+		t.Errorf("GetDiskType: got %v, want SSD", dtype)
 	}
 }
 
-// Empty udev Name: sysfs helper has no kname to resolve.
-func TestGetDiskTypeJBODNoUdevName(t *testing.T) {
-	csc := newJBODCachingStorCli(t, 1, true)
+// Serial not in fixture falls through to ErrDiskTypeUndetermined.
+func TestGetDiskTypeJBODSerialNoMatch(t *testing.T) {
+	csc := newJBODCachingStorCli(t)
 
-	_, err := csc.GetDiskType("/dev/sdb", disko.UdevInfo{})
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SERIAL_SHORT": "NOSUCHSERIAL"},
+	}
+	_, err := csc.GetDiskType("/dev/sdb", ud)
 	if !errors.Is(err, disko.ErrDiskTypeUndetermined) {
-		t.Errorf("expected ErrDiskTypeUndetermined with empty udev Name, got %v", err)
+		t.Errorf("expected ErrDiskTypeUndetermined for unknown serial, got %v", err)
+	}
+}
+
+// When the /eall/sall detail query was unavailable (empty string), drives
+// carry no SerialNumber and JBOD matching correctly fails over to udev.
+func TestGetDiskTypeJBODEmptyDetailOutputFallsThrough(t *testing.T) {
+	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll, "")
+	if err != nil {
+		t.Fatalf("newController failed: %s", err)
+	}
+
+	csc := &cachingStorCli{
+		mr:    &mockMegaRaid{ctrl: ctrl, err: nil},
+		cache: cache.New(5*time.Minute, 5*time.Minute),
+	}
+
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SERIAL_SHORT": "SNTEST001"},
+	}
+	_, err = csc.GetDiskType("/dev/sdb", ud)
+	if !errors.Is(err, disko.ErrDiskTypeUndetermined) {
+		t.Errorf("expected ErrDiskTypeUndetermined with no serials, got %v", err)
 	}
 }
 

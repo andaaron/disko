@@ -13,7 +13,6 @@ import (
 
 	"github.com/patrickmn/go-cache"
 	"machinerun.io/disko"
-	"machinerun.io/disko/linux/sysfs"
 )
 
 type storCli struct {
@@ -46,10 +45,9 @@ type scResultSection struct {
 }
 
 func (sc *storCli) Query(cID int) (Controller, error) {
-	// run /c0 show all
-	//   - get PDs and VDs
-	// run /c0/vall show all
-	//   - populate VD Properties and Path
+	// run /cN show          - get PDs and VDs
+	// run /cN/vall show all - populate VD Properties and Path
+	// run /cN/eall/sall show all - populate Drive.SerialNumber (best-effort)
 	var stdout, stderr []byte
 	var rc int
 
@@ -74,7 +72,16 @@ func (sc *storCli) Query(cID int) (Controller, error) {
 
 	cxVxOut := string(stdout)
 
-	return newController(cID, cxDxOut, cxVxOut)
+	// Best-effort: an error here leaves Drive.SerialNumber empty, which
+	// disables JBOD matching but does not break VD classification.
+	args = []string{fmt.Sprintf("/c%d/eall/sall", cID), "show", "all", "nolog"}
+	stdout, _, rc = storcli(args...)
+	cxEallSallOut := ""
+	if rc == 0 {
+		cxEallSallOut = string(stdout)
+	}
+
+	return newController(cID, cxDxOut, cxVxOut, cxEallSallOut)
 }
 
 func (sc *storCli) DriverSysfsPath() string {
@@ -85,7 +92,7 @@ func (sc *storCli) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskTy
 	return disko.HDD, fmt.Errorf("missing controller to run query")
 }
 
-func newController(cID int, cxDxOut string, cxVxOut string) (Controller, error) {
+func newController(cID int, cxDxOut, cxVxOut, cxEallSallOut string) (Controller, error) {
 	const pathPropName = "OS Drive Name"
 
 	ctrl := Controller{
@@ -113,6 +120,15 @@ func newController(cID int, cxDxOut string, cxVxOut string) (Controller, error) 
 		ctrl.VirtDrives[vID].Path = vProps[pathPropName]
 	}
 
+	// Best-effort: ignore parse errors; drives just keep empty SNs.
+	if serials, sErr := parseDriveSerials(cxEallSallOut); sErr == nil {
+		for _, drive := range pds {
+			if sn, ok := serials[driveKey{EID: drive.EID, Slot: drive.Slot}]; ok {
+				drive.SerialNumber = sn
+			}
+		}
+	}
+
 	for diskID, drive := range pds {
 		dgID := drive.DriveGroup
 		if dgID < 0 {
@@ -130,9 +146,6 @@ func newController(cID int, cxDxOut string, cxVxOut string) (Controller, error) 
 			}
 		}
 	}
-
-	// fmt.Printf("ctrl: %#v\n", propMap)
-	// fmt.Printf("ctrl: %#v\n", ctrl)
 
 	return ctrl, nil
 }
@@ -448,6 +461,71 @@ func parseVirtProperties(cmdOut string) (map[int](map[string]string), error) {
 	return vdmap, nil
 }
 
+// driveKey identifies a physical drive by (enclosure, slot) for
+// cross-referencing parsed 'storcli /cN' and '/cN/eall/sall' outputs.
+type driveKey struct {
+	EID  int
+	Slot int
+}
+
+// parseDriveSerials extracts (EID, Slot) -> SN from the output of
+// 'storcli /cN/eall/sall show all'. Returns an empty map (with nil error)
+// for empty input, so callers can feed in a best-effort string.
+func parseDriveSerials(cmdOut string) (map[driveKey]string, error) {
+	out := map[driveKey]string{}
+
+	if strings.TrimSpace(cmdOut) == "" {
+		return out, nil
+	}
+
+	// Surface Success/Failure/Unsupported via the standard header block.
+	for _, sect := range loadSections(cmdOut) {
+		if sect.Type == rsHeader {
+			if err := getHeaderError(parseKeyValData(sect.Lines)); err != nil {
+				return out, err
+			}
+			break
+		}
+	}
+
+	// Any line starting with "Drive /cX/eY/sZ " updates the current
+	// drive context (covers the summary, state, attributes, etc.
+	// sub-sections). The drive's SN appears later in the attributes
+	// sub-section.
+	driveHdr := regexp.MustCompile(`^Drive /c\d+/e(\d+)/s(\d+)\b`)
+	snLine := regexp.MustCompile(`^SN\s*=\s*(.*\S)\s*$`)
+
+	var cur *driveKey
+
+	for _, line := range strings.Split(cmdOut, "\n") {
+		if m := driveHdr.FindStringSubmatch(line); m != nil {
+			eid, err := strconv.Atoi(m[1])
+			if err != nil {
+				cur = nil
+				continue
+			}
+			slot, err := strconv.Atoi(m[2])
+			if err != nil {
+				cur = nil
+				continue
+			}
+			k := driveKey{EID: eid, Slot: slot}
+			cur = &k
+			continue
+		}
+
+		if cur == nil {
+			continue
+		}
+
+		if m := snLine.FindStringSubmatch(line); m != nil {
+			out[*cur] = m[1]
+		}
+	}
+
+	return out, nil
+}
+
 func parseIntOrDash(field string) (int, error) {
 	if field == "-" {
 		return -1, nil
@@ -587,10 +665,6 @@ func getCommandErrorRCDefault(err error, rcError int) int {
 type cachingStorCli struct {
 	mr    MegaRaid
 	cache *cache.Cache
-	// sysRoot: sysfs root for JBOD SCSI-target lookups ("/sys" in prod).
-	sysRoot string
-	// scsiTargetFn: kname -> SCSI target ID. Overridable for tests.
-	scsiTargetFn func(sysRoot, kname string) (int, bool, error)
 }
 
 // CachingStorCli - just a cache for a MegaRaid
@@ -598,10 +672,8 @@ func CachingStorCli() MegaRaid {
 	const longTime = 5 * time.Minute
 
 	return &cachingStorCli{
-		mr:           &storCli{},
-		cache:        cache.New(longTime, longTime),
-		sysRoot:      "/sys",
-		scsiTargetFn: sysfs.ReadSCSITarget,
+		mr:    &storCli{},
+		cache: cache.New(longTime, longTime),
 	}
 }
 
@@ -646,9 +718,10 @@ func (csc *cachingStorCli) GetDiskType(path string, udInfo disko.UdevInfo) (disk
 		}
 	}
 
-	// No VD matched path. Try JBOD/passthrough by matching SCSI target
-	// against Drive.DID; fall through with the sentinel on any failure.
-	if dType, ok := csc.jbodDiskTypeFromSCSI(ctrl, udInfo); ok {
+	// No VD matched path. Try JBOD/passthrough by matching udev serial
+	// against Drive.SerialNumber; fall through with the sentinel on any
+	// failure.
+	if dType, ok := jbodDiskTypeFromSerial(ctrl, udInfo); ok {
 		return dType, nil
 	}
 
@@ -665,27 +738,25 @@ func isSoftStorCliErr(err error) bool {
 		errors.Is(err, ErrUnsupported)
 }
 
-// jbodDiskTypeFromSCSI matches the Linux SCSI target T against Drive.DID
-// in the PD LIST. Returns ok=false on missing kname, non-SCSI device, DID
-// collision, or UnknownMedia.
-func (csc *cachingStorCli) jbodDiskTypeFromSCSI(ctrl Controller, udInfo disko.UdevInfo) (disko.DiskType, bool) {
-	if csc.scsiTargetFn == nil {
-		return disko.HDD, false
-	}
-
-	kname := udInfo.Name
-	if kname == "" {
-		return disko.HDD, false
-	}
-
-	target, ok, err := csc.scsiTargetFn(csc.sysRoot, kname)
-	if err != nil || !ok {
+// jbodDiskTypeFromSerial matches a udev serial against Drive.SerialNumber
+// across the controller's Drives. Returns ok=false on missing udev serial,
+// no match, collision, or unknown media.
+func jbodDiskTypeFromSerial(ctrl Controller, udInfo disko.UdevInfo) (disko.DiskType, bool) {
+	serials := collectUdevSerials(udInfo)
+	if len(serials) == 0 {
 		return disko.HDD, false
 	}
 
 	var matches []*Drive
 	for _, d := range ctrl.Drives {
-		if d != nil && d.ID == target {
+		if d == nil {
+			continue
+		}
+		sn := strings.TrimSpace(d.SerialNumber)
+		if sn == "" {
+			continue
+		}
+		if _, ok := serials[sn]; ok {
 			matches = append(matches, d)
 		}
 	}
@@ -699,11 +770,31 @@ func (csc *cachingStorCli) jbodDiskTypeFromSCSI(ctrl Controller, udInfo disko.Ud
 		return disko.SSD, true
 	case HDD:
 		return disko.HDD, true
+	case NVME:
+		return disko.NVME, true
 	case UnknownMedia:
 		return disko.HDD, false
 	}
 
 	return disko.HDD, false
+}
+
+// collectUdevSerials returns the udev tokens to match against
+// Drive.SerialNumber. storcli reports the SCSI INQUIRY page-80 serial,
+// which udev exposes as ID_SCSI_SERIAL; that's the primary key.
+// ID_SERIAL_SHORT and ID_SERIAL are WWN-derived on most SAS/SATA drives,
+// but they cover drives that don't expose a distinct VPD page-80 serial.
+func collectUdevSerials(udInfo disko.UdevInfo) map[string]struct{} {
+	out := map[string]struct{}{}
+
+	for _, key := range []string{"ID_SCSI_SERIAL", "ID_SERIAL_SHORT", "ID_SERIAL"} {
+		v := strings.TrimSpace(udInfo.Properties[key])
+		if v != "" {
+			out[v] = struct{}{}
+		}
+	}
+
+	return out
 }
 
 func (csc *cachingStorCli) DriverSysfsPath() string {

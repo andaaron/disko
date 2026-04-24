@@ -1734,6 +1734,41 @@ func TestCollectUdevSerialsPrefersBoth(t *testing.T) {
 	}
 }
 
+func TestCollectUdevSerialsIncludesSCSISerial(t *testing.T) {
+	ud := disko.UdevInfo{
+		Properties: map[string]string{
+			"ID_SCSI_SERIAL":  "TESTSN0PQI01",
+			"ID_SERIAL_SHORT": "deadbeefcafef001",
+			"ID_SERIAL":       "3deadbeefcafef001",
+		},
+	}
+
+	got := collectUdevSerials(ud)
+	for _, want := range []string{
+		"TESTSN0PQI01",
+		"deadbeefcafef001",
+		"3deadbeefcafef001",
+	} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("collectUdevSerials: missing token %q", want)
+		}
+	}
+}
+
+func TestJBODDiskTypeSerialViaIDSCSISerial(t *testing.T) {
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SCSI_SERIAL": "SN-HDD-1"},
+	}
+
+	dType, ok := jbodDiskTypeFromSerial([]Controller{jbodCtrlWithPDs()}, ud)
+	if !ok {
+		t.Fatalf("expected ok=true when ID_SCSI_SERIAL matches")
+	}
+	if dType != disko.HDD {
+		t.Errorf("jbodDiskTypeFromSerial: got %v, want HDD", dType)
+	}
+}
+
 // isSoftArcconfErr must recognise the three soft sentinels whether bare
 // or wrapped with fmt.Errorf("%w"), so wrapped per-controller errors are
 // still routed through the udev fallback instead of propagating as fatal.
