@@ -520,11 +520,18 @@ func getCommandErrorRCDefault(err error, rcError int) int {
 
 // Implement the mpi3mr Interface with storcli2
 type storCli2 struct {
+	// sysRoot: sysfs root for JBOD SCSI-target lookups ("/sys" in prod).
+	sysRoot string
+	// scsiTargetFn: kname -> SCSI target ID. Overridable for tests.
+	scsiTargetFn func(sysRoot, kname string) (int, bool, error)
 }
 
 // StorCli returns a storcli2 specific implementation of Query for the Mpi3mr interface
 func StorCli2() Mpi3mr {
-	return &storCli2{}
+	return &storCli2{
+		sysRoot:      "/sys",
+		scsiTargetFn: readSCSITarget,
+	}
 }
 
 const (
@@ -596,48 +603,101 @@ func (sc *storCli2) DriverSysfsPath() string {
 	return SysfsPCIDriversPath
 }
 
-func (sc *storCli2) GetDiskType(path string) (disko.DiskType, error) {
+func (sc *storCli2) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskType, error) {
 	cIDs, err := sc.List()
 	if err != nil {
+		if isSoftStorCli2Err(err) {
+			return disko.HDD, disko.ErrDiskTypeUndetermined
+		}
 		return disko.HDD, errors.Errorf("failed to get controller list: %s", err)
 	}
 
-	// isPhysical becomes true once we have successfully inspected at least one
-	// controller. If we then finish the loop without matching path against any
-	// VirtualDrive, we know the device is visible through the HBA but is not a
-	// configured virtual drive -- i.e. it is a physical/passthrough (JBOD) disk.
-	isPhysical := false
-	queryErrs := []error{}
+	var queryErrs []error
+	var queriedCtrls []Controller
 
 	for _, cID := range cIDs {
 		ctrl, err := sc.Query(cID)
 		if err != nil {
-			queryErrs = append(queryErrs, fmt.Errorf("error while getting config for controller id:%d %s", cID, err))
+			queryErrs = append(queryErrs, fmt.Errorf("controller id %d: %w", cID, err))
 			continue
 		}
 
-		isPhysical = true
+		queriedCtrls = append(queriedCtrls, ctrl)
 
 		for _, vDev := range ctrl.VirtualDrives {
-			if vDev.Path() == path {
-				if vDev.IsSSD() {
-					return disko.SSD, nil
-				}
-
-				return disko.HDD, nil
+			if vDev.Path() != path {
+				continue
 			}
+			if vDev.IsSSD() {
+				return disko.SSD, nil
+			}
+			return disko.HDD, nil
 		}
 	}
 
 	for _, err := range queryErrs {
-		if err != ErrNoStor2cli && err != ErrNoController && err != ErrUnsupported {
+		if !isSoftStorCli2Err(err) {
 			return disko.HDD, err
 		}
 	}
 
-	if isPhysical {
-		return disko.HDD, disko.ErrNotVirtualDrive
+	// No VD matched path (or no controller responded). Try JBOD/
+	// passthrough by matching SCSI target against PhysicalDrive.PID;
+	// fall through with the sentinel so the caller uses udev.
+	if dType, ok := sc.jbodDiskTypeFromSCSI(queriedCtrls, udInfo); ok {
+		return dType, nil
 	}
 
-	return disko.HDD, fmt.Errorf("cannot determine disk type for path %q", path)
+	return disko.HDD, disko.ErrDiskTypeUndetermined
+}
+
+// isSoftStorCli2Err returns true when err indicates that storcli2 simply
+// cannot answer right now (binary missing, no controller present, or an
+// unsupported controller). Callers should fall back to generic detection
+// rather than treat these as fatal.
+func isSoftStorCli2Err(err error) bool {
+	return errors.Is(err, ErrNoStor2cli) ||
+		errors.Is(err, ErrNoController) ||
+		errors.Is(err, ErrUnsupported)
+}
+
+// jbodDiskTypeFromSCSI matches the Linux SCSI target T against
+// PhysicalDrive.PID across the given controllers. Returns ok=false on
+// missing kname, non-SCSI device, PID collision, or unknown medium.
+func (sc *storCli2) jbodDiskTypeFromSCSI(ctrls []Controller, udInfo disko.UdevInfo) (disko.DiskType, bool) {
+	if sc.scsiTargetFn == nil {
+		return disko.HDD, false
+	}
+
+	kname := udInfo.Name
+	if kname == "" {
+		return disko.HDD, false
+	}
+
+	target, ok, err := sc.scsiTargetFn(sc.sysRoot, kname)
+	if err != nil || !ok {
+		return disko.HDD, false
+	}
+
+	var matches []PhysicalDrive
+	for _, ctrl := range ctrls {
+		for _, pd := range ctrl.PhysicalDrives {
+			if pd.PID == target {
+				matches = append(matches, pd)
+			}
+		}
+	}
+
+	if len(matches) != 1 {
+		return disko.HDD, false
+	}
+
+	switch strings.ToUpper(strings.TrimSpace(matches[0].Medium)) {
+	case "SSD":
+		return disko.SSD, true
+	case "HDD":
+		return disko.HDD, true
+	}
+
+	return disko.HDD, false
 }

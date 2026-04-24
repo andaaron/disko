@@ -294,13 +294,9 @@ func (ls *linuxSystem) GetDiskType(path string, udInfo disko.UdevInfo) (disko.Di
 	return dType, err
 }
 
-// resolveDiskType classifies devicePath as a DiskType. If the device sits
-// behind a known RAID controller and corresponds to a virtual/logical drive,
-// the controller's classification is used and the returned bool is true. For
-// devices that are either not on a RAID controller or are visible through a
-// RAID HBA in JBOD/passthrough mode (ErrNotVirtualDrive), the function falls
-// back to generic detection via getDiskType(udInfo) with the bool set to
-// false.
+// resolveDiskType classifies devicePath. Returns (type, true, nil) when a
+// RAID controller owns the virtual/logical drive; otherwise (non-RAID or
+// ErrDiskTypeUndetermined) falls back to getDiskType(udInfo) with bool=false.
 func (ls *linuxSystem) resolveDiskType(devicePath string, udInfo disko.UdevInfo) (disko.DiskType, bool, error) {
 	devpath := udInfo.Properties["DEVPATH"]
 
@@ -309,10 +305,10 @@ func (ls *linuxSystem) resolveDiskType(devicePath string, udInfo disko.UdevInfo)
 			continue
 		}
 
-		dType, err := ctrl.GetDiskType(devicePath)
+		dType, err := ctrl.GetDiskType(devicePath, udInfo)
 		if err != nil {
-			if errors.Is(err, disko.ErrNotVirtualDrive) {
-				log.Printf("device %q on RAID sysfs path has no virtual drive (JBOD?), using generic detection", devicePath)
+			if errors.Is(err, disko.ErrDiskTypeUndetermined) {
+				log.Printf("RAID controller could not determine disk type for %q, using generic detection", devicePath)
 				break
 			}
 

@@ -2,6 +2,7 @@ package megaraid
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -79,7 +80,7 @@ func (sc *storCli) DriverSysfsPath() string {
 	return SysfsPCIDriversPath
 }
 
-func (sc *storCli) GetDiskType(path string) (disko.DiskType, error) {
+func (sc *storCli) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskType, error) {
 	return disko.HDD, fmt.Errorf("missing controller to run query")
 }
 
@@ -585,6 +586,10 @@ func getCommandErrorRCDefault(err error, rcError int) int {
 type cachingStorCli struct {
 	mr    MegaRaid
 	cache *cache.Cache
+	// sysRoot: sysfs root for JBOD SCSI-target lookups ("/sys" in prod).
+	sysRoot string
+	// scsiTargetFn: kname -> SCSI target ID. Overridable for tests.
+	scsiTargetFn func(sysRoot, kname string) (int, bool, error)
 }
 
 // CachingStorCli - just a cache for a MegaRaid
@@ -592,8 +597,10 @@ func CachingStorCli() MegaRaid {
 	const longTime = 5 * time.Minute
 
 	return &cachingStorCli{
-		mr:    &storCli{},
-		cache: cache.New(longTime, longTime),
+		mr:           &storCli{},
+		cache:        cache.New(longTime, longTime),
+		sysRoot:      "/sys",
+		scsiTargetFn: readSCSITarget,
 	}
 }
 
@@ -617,25 +624,85 @@ func (csc *cachingStorCli) Query(cID int) (Controller, error) {
 	return ctrl, err
 }
 
-func (csc *cachingStorCli) GetDiskType(path string) (disko.DiskType, error) {
+func (csc *cachingStorCli) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskType, error) {
 	ctrl, err := csc.Query(0)
-	if err == nil {
-		for _, vd := range ctrl.VirtDrives {
-			if vd.Path == path {
-				if ctrl.DriveGroups[vd.DriveGroup].IsSSD() {
-					return disko.SSD, nil
-				}
-
-				return disko.HDD, nil
-			}
+	if err != nil {
+		if isSoftStorCliErr(err) {
+			// Controller tool unavailable or no controller. Fall
+			// through with the sentinel so the caller uses udev.
+			return disko.HDD, disko.ErrDiskTypeUndetermined
 		}
-
-		return disko.HDD, disko.ErrNotVirtualDrive
-	} else if err != ErrNoStorcli && err != ErrNoController && err != ErrUnsupported {
 		return disko.HDD, err
 	}
 
-	return disko.HDD, fmt.Errorf("cannot determine disk type")
+	for _, vd := range ctrl.VirtDrives {
+		if vd.Path == path {
+			if ctrl.DriveGroups[vd.DriveGroup].IsSSD() {
+				return disko.SSD, nil
+			}
+
+			return disko.HDD, nil
+		}
+	}
+
+	// No VD matched path. Try JBOD/passthrough by matching SCSI target
+	// against Drive.DID; fall through with the sentinel on any failure.
+	if dType, ok := csc.jbodDiskTypeFromSCSI(ctrl, udInfo); ok {
+		return dType, nil
+	}
+
+	return disko.HDD, disko.ErrDiskTypeUndetermined
+}
+
+// isSoftStorCliErr returns true when err indicates that storcli simply
+// cannot answer right now (binary missing, no controller present, or an
+// unsupported controller). Callers should fall back to generic detection
+// rather than treat these as fatal.
+func isSoftStorCliErr(err error) bool {
+	return errors.Is(err, ErrNoStorcli) ||
+		errors.Is(err, ErrNoController) ||
+		errors.Is(err, ErrUnsupported)
+}
+
+// jbodDiskTypeFromSCSI matches the Linux SCSI target T against Drive.DID
+// in the PD LIST. Returns ok=false on missing kname, non-SCSI device, DID
+// collision, or UnknownMedia.
+func (csc *cachingStorCli) jbodDiskTypeFromSCSI(ctrl Controller, udInfo disko.UdevInfo) (disko.DiskType, bool) {
+	if csc.scsiTargetFn == nil {
+		return disko.HDD, false
+	}
+
+	kname := udInfo.Name
+	if kname == "" {
+		return disko.HDD, false
+	}
+
+	target, ok, err := csc.scsiTargetFn(csc.sysRoot, kname)
+	if err != nil || !ok {
+		return disko.HDD, false
+	}
+
+	var matches []*Drive
+	for _, d := range ctrl.Drives {
+		if d != nil && d.ID == target {
+			matches = append(matches, d)
+		}
+	}
+
+	if len(matches) != 1 {
+		return disko.HDD, false
+	}
+
+	switch matches[0].MediaType {
+	case SSD:
+		return disko.SSD, true
+	case HDD:
+		return disko.HDD, true
+	case UnknownMedia:
+		return disko.HDD, false
+	}
+
+	return disko.HDD, false
 }
 
 func (csc *cachingStorCli) DriverSysfsPath() string {

@@ -2,9 +2,13 @@ package smartpqi
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+
+	"machinerun.io/disko"
 )
 
 var arcConfGetConfig = `
@@ -1575,5 +1579,188 @@ func TestSmartPqiNewControllerBadInput(t *testing.T) {
 		if !strings.Contains(err.Error(), testCase.expectedErr) {
 			t.Errorf("expected '%s' message, got %q index %d", testCase.expectedErr, err, idx)
 		}
+	}
+}
+
+// jbodCtrlWithPDs: one HDD, one SSD, one NVMe keyed by distinct serials.
+func jbodCtrlWithPDs() Controller {
+	return Controller{
+		ID: 1,
+		PhysicalDrives: DriveSet{
+			10: &PhysicalDevice{ID: 10, SerialNumber: "SN-HDD-1", Type: HDD},
+			20: &PhysicalDevice{ID: 20, SerialNumber: "SN-SSD-1", Type: SSD},
+			30: &PhysicalDevice{ID: 30, SerialNumber: "SN-NVME-1", Type: NVME},
+		},
+	}
+}
+
+func TestJBODDiskTypeSerialHDDShort(t *testing.T) {
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SERIAL_SHORT": "SN-HDD-1"},
+	}
+
+	dType, ok := jbodDiskTypeFromSerial([]Controller{jbodCtrlWithPDs()}, ud)
+	if !ok {
+		t.Fatalf("expected ok=true when ID_SERIAL_SHORT matches")
+	}
+	if dType != disko.HDD {
+		t.Errorf("jbodDiskTypeFromSerial: got %v, want HDD", dType)
+	}
+}
+
+// ID_SERIAL is the fallback when ID_SERIAL_SHORT is absent.
+func TestJBODDiskTypeSerialSSDFallback(t *testing.T) {
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SERIAL": "SN-SSD-1"},
+	}
+
+	dType, ok := jbodDiskTypeFromSerial([]Controller{jbodCtrlWithPDs()}, ud)
+	if !ok {
+		t.Fatalf("expected ok=true when ID_SERIAL matches as fallback")
+	}
+	if dType != disko.SSD {
+		t.Errorf("jbodDiskTypeFromSerial: got %v, want SSD", dType)
+	}
+}
+
+func TestJBODDiskTypeSerialNVME(t *testing.T) {
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SERIAL_SHORT": "SN-NVME-1"},
+	}
+
+	dType, ok := jbodDiskTypeFromSerial([]Controller{jbodCtrlWithPDs()}, ud)
+	if !ok {
+		t.Fatalf("expected ok=true for NVME serial match")
+	}
+	if dType != disko.NVME {
+		t.Errorf("jbodDiskTypeFromSerial: got %v, want NVME", dType)
+	}
+}
+
+// No ID_SERIAL* property in udev.
+func TestJBODDiskTypeSerialNoSerial(t *testing.T) {
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_MODEL": "SomeModel"},
+	}
+
+	if _, ok := jbodDiskTypeFromSerial([]Controller{jbodCtrlWithPDs()}, ud); ok {
+		t.Errorf("expected ok=false when udev carries no ID_SERIAL*")
+	}
+}
+
+// Serial not reported by any controller.
+func TestJBODDiskTypeSerialNoMatch(t *testing.T) {
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SERIAL_SHORT": "SN-UNKNOWN"},
+	}
+
+	if _, ok := jbodDiskTypeFromSerial([]Controller{jbodCtrlWithPDs()}, ud); ok {
+		t.Errorf("expected ok=false when no PhysicalDevice matches")
+	}
+}
+
+// Duplicate serial across controllers is ambiguous.
+func TestJBODDiskTypeSerialAmbiguous(t *testing.T) {
+	dup := Controller{
+		ID: 2,
+		PhysicalDrives: DriveSet{
+			99: &PhysicalDevice{ID: 99, SerialNumber: "SN-HDD-1", Type: SSD},
+		},
+	}
+
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SERIAL_SHORT": "SN-HDD-1"},
+	}
+
+	if _, ok := jbodDiskTypeFromSerial([]Controller{jbodCtrlWithPDs(), dup}, ud); ok {
+		t.Errorf("expected ok=false on duplicate SerialNumber across controllers")
+	}
+}
+
+// Matched PD with UnknownMedia cannot be classified.
+func TestJBODDiskTypeSerialUnknownMedia(t *testing.T) {
+	ctrl := Controller{
+		ID: 3,
+		PhysicalDrives: DriveSet{
+			10: &PhysicalDevice{ID: 10, SerialNumber: "SN-UNK", Type: UnknownMedia},
+		},
+	}
+
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SERIAL_SHORT": "SN-UNK"},
+	}
+
+	if _, ok := jbodDiskTypeFromSerial([]Controller{ctrl}, ud); ok {
+		t.Errorf("expected ok=false when matched PD has UnknownMedia")
+	}
+}
+
+// Blank controller-side SerialNumber never matches.
+func TestJBODDiskTypeSerialEmptyPDSerial(t *testing.T) {
+	ctrl := Controller{
+		ID: 4,
+		PhysicalDrives: DriveSet{
+			10: &PhysicalDevice{ID: 10, SerialNumber: "   ", Type: SSD},
+		},
+	}
+
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SERIAL_SHORT": "SN-X"},
+	}
+
+	if _, ok := jbodDiskTypeFromSerial([]Controller{ctrl}, ud); ok {
+		t.Errorf("expected ok=false when PhysicalDevice has blank SerialNumber")
+	}
+}
+
+func TestCollectUdevSerialsPrefersBoth(t *testing.T) {
+	ud := disko.UdevInfo{
+		Properties: map[string]string{
+			"ID_SERIAL_SHORT": "short1",
+			"ID_SERIAL":       "long_short1",
+			"ID_MODEL":        "ignored",
+		},
+	}
+
+	got := collectUdevSerials(ud)
+	if _, ok := got["short1"]; !ok {
+		t.Errorf("missing ID_SERIAL_SHORT token")
+	}
+	if _, ok := got["long_short1"]; !ok {
+		t.Errorf("missing ID_SERIAL token")
+	}
+	if _, ok := got["ignored"]; ok {
+		t.Errorf("collectUdevSerials must not include unrelated properties")
+	}
+}
+
+// isSoftArcconfErr must recognise the three soft sentinels whether bare
+// or wrapped with fmt.Errorf("%w"), so wrapped per-controller errors are
+// still routed through the udev fallback instead of propagating as fatal.
+func TestIsSoftArcconfErr(t *testing.T) {
+	hard := errors.New("arcconf blew up")
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"bare ErrNoArcconf", ErrNoArcconf, true},
+		{"bare ErrNoController", ErrNoController, true},
+		{"bare ErrUnsupported", ErrUnsupported, true},
+		{"wrapped ErrNoArcconf", fmt.Errorf("controller id %d: %w", 0, ErrNoArcconf), true},
+		{"wrapped ErrNoController", fmt.Errorf("controller id %d: %w", 1, ErrNoController), true},
+		{"wrapped ErrUnsupported", fmt.Errorf("controller id %d: %w", 2, ErrUnsupported), true},
+		{"unrelated hard error", hard, false},
+		{"wrapped hard error", fmt.Errorf("controller id %d: %w", 3, hard), false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isSoftArcconfErr(tc.err); got != tc.want {
+				t.Errorf("isSoftArcconfErr(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

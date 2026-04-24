@@ -2,6 +2,7 @@ package smartpqi
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -489,50 +490,119 @@ func (ac *arcConf) Query(cID int) (Controller, error) {
 	return Controller{}, fmt.Errorf("unknown controller id %d", cID)
 }
 
-func (ac *arcConf) GetDiskType(path string) (disko.DiskType, error) {
+func (ac *arcConf) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskType, error) {
 	cIDs, err := ac.List()
 	if err != nil {
+		if isSoftArcconfErr(err) {
+			return disko.HDD, disko.ErrDiskTypeUndetermined
+		}
 		return disko.HDD, fmt.Errorf("failed to enumerate controllers: %s", err)
 	}
 
-	// isPhysical becomes true once we have successfully inspected at least one
-	// controller. If we then finish the loop without matching path against any
-	// LogicalDrive, we know the device is visible through the HBA but is not a
-	// configured logical drive -- i.e. it is a physical/passthrough (JBOD) disk.
-	isPhysical := false
-	queryErrs := []error{}
+	var queryErrs []error
+	var queriedCtrls []Controller
 
 	for _, cID := range cIDs {
 		ctrl, err := ac.GetConfig(cID)
 		if err != nil {
-			queryErrs = append(queryErrs, fmt.Errorf("error while getting config for controller id:%d: %s", cID, err))
+			queryErrs = append(queryErrs, fmt.Errorf("controller id %d: %w", cID, err))
 			continue
 		}
 
-		isPhysical = true
+		queriedCtrls = append(queriedCtrls, ctrl)
 
 		for _, lDrive := range ctrl.LogicalDrives {
-			if lDrive.DiskName == path {
-				if lDrive.IsSSD() {
-					return disko.SSD, nil
-				}
-
-				return disko.HDD, nil
+			if lDrive.DiskName != path {
+				continue
 			}
+			if lDrive.IsSSD() {
+				return disko.SSD, nil
+			}
+			return disko.HDD, nil
 		}
 	}
 
 	for _, err := range queryErrs {
-		if err != ErrNoArcconf && err != ErrNoController && err != ErrUnsupported {
+		if !isSoftArcconfErr(err) {
 			return disko.HDD, err
 		}
 	}
 
-	if isPhysical {
-		return disko.HDD, disko.ErrNotVirtualDrive
+	// No LD matched path (or no controller responded). Try JBOD by
+	// matching udev serial against PhysicalDevice SerialNumber; fall
+	// through with the sentinel so the caller uses udev.
+	if dType, ok := jbodDiskTypeFromSerial(queriedCtrls, udInfo); ok {
+		return dType, nil
 	}
 
-	return disko.HDD, fmt.Errorf("cannot determine disk type")
+	return disko.HDD, disko.ErrDiskTypeUndetermined
+}
+
+// isSoftArcconfErr returns true when err indicates that arcconf simply
+// cannot answer right now (binary missing, no controller present, or an
+// unsupported controller). Callers should fall back to generic detection
+// rather than treat these as fatal.
+func isSoftArcconfErr(err error) bool {
+	return errors.Is(err, ErrNoArcconf) ||
+		errors.Is(err, ErrNoController) ||
+		errors.Is(err, ErrUnsupported)
+}
+
+// jbodDiskTypeFromSerial matches a udev serial against PhysicalDevice
+// SerialNumber across the given controllers. Returns ok=false on missing
+// udev serial, no match, collision, or unknown media.
+func jbodDiskTypeFromSerial(ctrls []Controller, udInfo disko.UdevInfo) (disko.DiskType, bool) {
+	serials := collectUdevSerials(udInfo)
+	if len(serials) == 0 {
+		return disko.HDD, false
+	}
+
+	var matches []*PhysicalDevice
+	for _, ctrl := range ctrls {
+		for _, pDev := range ctrl.PhysicalDrives {
+			if pDev == nil {
+				continue
+			}
+			pdSerial := strings.TrimSpace(pDev.SerialNumber)
+			if pdSerial == "" {
+				continue
+			}
+			if _, ok := serials[pdSerial]; ok {
+				matches = append(matches, pDev)
+			}
+		}
+	}
+
+	if len(matches) != 1 {
+		return disko.HDD, false
+	}
+
+	switch matches[0].Type {
+	case SSD:
+		return disko.SSD, true
+	case HDD:
+		return disko.HDD, true
+	case NVME:
+		return disko.NVME, true
+	}
+
+	return disko.HDD, false
+}
+
+// collectUdevSerials returns the udev tokens to match against
+// PhysicalDevice.SerialNumber: the raw ID_SERIAL_SHORT and, as fallback,
+// the longer "<vendor>_<model>_<serial>" ID_SERIAL.
+func collectUdevSerials(udInfo disko.UdevInfo) map[string]struct{} {
+	out := map[string]struct{}{}
+
+	for _, key := range []string{"ID_SERIAL_SHORT", "ID_SERIAL"} {
+		v := strings.TrimSpace(udInfo.Properties[key])
+		if v != "" {
+			out[v] = struct{}{}
+		}
+	}
+
+	return out
 }
 
 func (ac *arcConf) DriverSysfsPath() string {

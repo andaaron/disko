@@ -12,6 +12,6 @@ const (
 
 type RAIDController interface {
 	// Type() RAIDControllerType
-	GetDiskType(string) (disko.DiskType, error)
+	GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskType, error)
 	DriverSysfsPath() string
 }

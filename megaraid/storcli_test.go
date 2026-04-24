@@ -3,6 +3,7 @@ package megaraid
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -1486,7 +1487,7 @@ func (m *mockMegaRaid) Query(cID int) (Controller, error) {
 	return m.ctrl, m.err
 }
 
-func (m *mockMegaRaid) GetDiskType(path string) (disko.DiskType, error) {
+func (m *mockMegaRaid) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskType, error) {
 	return disko.HDD, nil
 }
 
@@ -1494,7 +1495,7 @@ func (m *mockMegaRaid) DriverSysfsPath() string {
 	return "/sys/bus/pci/drivers/megaraid_sas"
 }
 
-func TestGetDiskTypeJBODReturnsErrNotVirtualDrive(t *testing.T) {
+func TestGetDiskTypeJBODReturnsErrDiskTypeUndetermined(t *testing.T) {
 	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll)
 	if err != nil {
 		t.Fatalf("newController failed: %s", err)
@@ -1506,9 +1507,9 @@ func TestGetDiskTypeJBODReturnsErrNotVirtualDrive(t *testing.T) {
 	}
 
 	for _, path := range []string{"/dev/sda", "/dev/sdb", "/dev/sdc"} {
-		dtype, err := csc.GetDiskType(path)
-		if !errors.Is(err, disko.ErrNotVirtualDrive) {
-			t.Errorf("GetDiskType(%q): expected ErrNotVirtualDrive, got %v", path, err)
+		dtype, err := csc.GetDiskType(path, disko.UdevInfo{})
+		if !errors.Is(err, disko.ErrDiskTypeUndetermined) {
+			t.Errorf("GetDiskType(%q): expected ErrDiskTypeUndetermined, got %v", path, err)
 		}
 
 		if dtype != disko.HDD {
@@ -1517,18 +1518,146 @@ func TestGetDiskTypeJBODReturnsErrNotVirtualDrive(t *testing.T) {
 	}
 }
 
-func TestGetDiskTypeQueryFailureNotSentinel(t *testing.T) {
+// A soft storcli failure (missing binary / no controller / unsupported)
+// should return the sentinel so the caller falls back to udev.
+func TestGetDiskTypeSoftQueryFailureReturnsSentinel(t *testing.T) {
 	csc := &cachingStorCli{
 		mr:    &mockMegaRaid{ctrl: Controller{}, err: ErrNoStorcli},
 		cache: cache.New(5*time.Minute, 5*time.Minute),
 	}
 
-	_, err := csc.GetDiskType("/dev/sda")
-	if errors.Is(err, disko.ErrNotVirtualDrive) {
-		t.Error("GetDiskType should NOT return ErrNotVirtualDrive when storcli is missing")
+	_, err := csc.GetDiskType("/dev/sda", disko.UdevInfo{})
+	if !errors.Is(err, disko.ErrDiskTypeUndetermined) {
+		t.Errorf("expected ErrDiskTypeUndetermined on soft storcli failure, got %v", err)
+	}
+}
+
+// A hard storcli error must propagate unchanged (it is not the sentinel).
+func TestGetDiskTypeHardQueryFailurePropagates(t *testing.T) {
+	hardErr := fmt.Errorf("storcli exploded")
+	csc := &cachingStorCli{
+		mr:    &mockMegaRaid{ctrl: Controller{}, err: hardErr},
+		cache: cache.New(5*time.Minute, 5*time.Minute),
 	}
 
+	_, err := csc.GetDiskType("/dev/sda", disko.UdevInfo{})
+	if errors.Is(err, disko.ErrDiskTypeUndetermined) {
+		t.Error("hard storcli error should NOT be treated as the sentinel")
+	}
 	if err == nil {
-		t.Error("GetDiskType should return an error when storcli is missing")
+		t.Error("hard storcli error must propagate")
+	}
+}
+
+// newJBODCachingStorCli wires the Cisco JBOD fixture to a stub scsiTargetFn
+// that returns (target, ok) for kname "sdb".
+func newJBODCachingStorCli(t *testing.T, target int, ok bool) *cachingStorCli {
+	t.Helper()
+
+	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll)
+	if err != nil {
+		t.Fatalf("newController failed: %s", err)
+	}
+
+	return &cachingStorCli{
+		mr:      &mockMegaRaid{ctrl: ctrl, err: nil},
+		cache:   cache.New(5*time.Minute, 5*time.Minute),
+		sysRoot: "/unused-in-test",
+		scsiTargetFn: func(_, kname string) (int, bool, error) {
+			if kname == "sdb" {
+				return target, ok, nil
+			}
+			return 0, false, nil
+		},
+	}
+}
+
+// DID=1 is the SSD in the fixture.
+func TestGetDiskTypeJBODSCSITargetMatchSSD(t *testing.T) {
+	csc := newJBODCachingStorCli(t, 1, true)
+
+	ud := disko.UdevInfo{Name: "sdb"}
+	dtype, err := csc.GetDiskType("/dev/sdb", ud)
+	if err != nil {
+		t.Fatalf("expected nil err for SSD JBOD match, got %v", err)
+	}
+	if dtype != disko.SSD {
+		t.Errorf("GetDiskType: got %v, want SSD", dtype)
+	}
+}
+
+// DID=0 is an HDD in the fixture.
+func TestGetDiskTypeJBODSCSITargetMatchHDD(t *testing.T) {
+	csc := newJBODCachingStorCli(t, 0, true)
+
+	ud := disko.UdevInfo{Name: "sdb"}
+	dtype, err := csc.GetDiskType("/dev/sdb", ud)
+	if err != nil {
+		t.Fatalf("expected nil err for HDD JBOD match, got %v", err)
+	}
+	if dtype != disko.HDD {
+		t.Errorf("GetDiskType: got %v, want HDD", dtype)
+	}
+}
+
+// DID not in the fixture falls through to ErrDiskTypeUndetermined.
+func TestGetDiskTypeJBODSCSITargetNoMatch(t *testing.T) {
+	csc := newJBODCachingStorCli(t, 42, true)
+
+	ud := disko.UdevInfo{Name: "sdb"}
+	_, err := csc.GetDiskType("/dev/sdb", ud)
+	if !errors.Is(err, disko.ErrDiskTypeUndetermined) {
+		t.Errorf("expected ErrDiskTypeUndetermined for unknown DID, got %v", err)
+	}
+}
+
+// Unresolvable sysfs H:C:T:L (NVMe, virtio, missing symlink).
+func TestGetDiskTypeJBODSCSITargetUnresolved(t *testing.T) {
+	csc := newJBODCachingStorCli(t, 0, false)
+
+	ud := disko.UdevInfo{Name: "sdb"}
+	_, err := csc.GetDiskType("/dev/sdb", ud)
+	if !errors.Is(err, disko.ErrDiskTypeUndetermined) {
+		t.Errorf("expected ErrDiskTypeUndetermined when SCSI target is unresolved, got %v", err)
+	}
+}
+
+// Empty udev Name: sysfs helper has no kname to resolve.
+func TestGetDiskTypeJBODNoUdevName(t *testing.T) {
+	csc := newJBODCachingStorCli(t, 1, true)
+
+	_, err := csc.GetDiskType("/dev/sdb", disko.UdevInfo{})
+	if !errors.Is(err, disko.ErrDiskTypeUndetermined) {
+		t.Errorf("expected ErrDiskTypeUndetermined with empty udev Name, got %v", err)
+	}
+}
+
+// isSoftStorCliErr must recognise the three soft sentinels whether bare
+// or wrapped with fmt.Errorf("%w").
+func TestIsSoftStorCliErr(t *testing.T) {
+	hard := errors.New("storcli blew up")
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"bare ErrNoStorcli", ErrNoStorcli, true},
+		{"bare ErrNoController", ErrNoController, true},
+		{"bare ErrUnsupported", ErrUnsupported, true},
+		{"wrapped ErrNoStorcli", fmt.Errorf("ctx: %w", ErrNoStorcli), true},
+		{"wrapped ErrNoController", fmt.Errorf("ctx: %w", ErrNoController), true},
+		{"wrapped ErrUnsupported", fmt.Errorf("ctx: %w", ErrUnsupported), true},
+		{"unrelated hard error", hard, false},
+		{"wrapped hard error", fmt.Errorf("ctx: %w", hard), false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isSoftStorCliErr(tc.err); got != tc.want {
+				t.Errorf("isSoftStorCliErr(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

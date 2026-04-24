@@ -244,11 +244,13 @@ type mockRAIDController struct {
 	isSysPathRAID     bool
 	getDiskTypeCalled bool
 	getDiskTypePath   string
+	getDiskTypeUdev   disko.UdevInfo
 }
 
-func (m *mockRAIDController) GetDiskType(path string) (disko.DiskType, error) {
+func (m *mockRAIDController) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskType, error) {
 	m.getDiskTypeCalled = true
 	m.getDiskTypePath = path
+	m.getDiskTypeUdev = udInfo
 	return m.diskType, m.err
 }
 
@@ -319,7 +321,7 @@ func TestGetDiskTypeJBODFallback(t *testing.T) {
 	ast := assert.New(t)
 	mock := &mockRAIDController{
 		diskType:      disko.HDD,
-		err:           disko.ErrNotVirtualDrive,
+		err:           disko.ErrDiskTypeUndetermined,
 		sysfsPath:     "/sys/bus/pci/drivers/megaraid_sas",
 		isSysPathRAID: true,
 	}
@@ -337,13 +339,13 @@ func TestGetDiskTypeJBODFallback(t *testing.T) {
 	dtype, err := ls.GetDiskType("/dev/sda", udInfo)
 
 	ast.True(mock.getDiskTypeCalled, "RAID controller should have been consulted")
-	ast.NoError(err, "ErrNotVirtualDrive should not propagate as a fatal error")
+	ast.NoError(err, "ErrDiskTypeUndetermined should not propagate as a fatal error")
 	ast.Equal(disko.HDD, dtype, "should fall through to generic detection (HDD default)")
 }
 
 func TestGetDiskTypeWrappedSentinelFallback(t *testing.T) {
 	ast := assert.New(t)
-	wrappedErr := fmt.Errorf("controller 0: %w", disko.ErrNotVirtualDrive)
+	wrappedErr := fmt.Errorf("controller 0: %w", disko.ErrDiskTypeUndetermined)
 
 	mock := &mockRAIDController{
 		diskType:      disko.HDD,
@@ -356,7 +358,7 @@ func TestGetDiskTypeWrappedSentinelFallback(t *testing.T) {
 	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}}
 
 	_, err := ls.GetDiskType("/dev/sda", udInfo)
-	ast.NoError(err, "wrapped ErrNotVirtualDrive should still trigger fallback via errors.Is")
+	ast.NoError(err, "wrapped ErrDiskTypeUndetermined should still trigger fallback via errors.Is")
 }
 
 func TestGetDiskTypeRAIDRealError(t *testing.T) {
@@ -375,7 +377,7 @@ func TestGetDiskTypeRAIDRealError(t *testing.T) {
 	ast.Error(err)
 	ast.Contains(err.Error(), "failed to get diskType")
 	ast.Contains(err.Error(), "storcli binary crashed")
-	ast.False(errors.Is(err, disko.ErrNotVirtualDrive))
+	ast.False(errors.Is(err, disko.ErrDiskTypeUndetermined))
 }
 
 func TestGetDiskTypeNoRAIDMatch(t *testing.T) {
@@ -400,7 +402,7 @@ func TestGetDiskTypeMultiControllerJBODFallback(t *testing.T) {
 
 	megaraidMock := &mockRAIDController{
 		diskType:      disko.HDD,
-		err:           disko.ErrNotVirtualDrive,
+		err:           disko.ErrDiskTypeUndetermined,
 		sysfsPath:     "/sys/bus/pci/drivers/megaraid_sas",
 		isSysPathRAID: true,
 	}
@@ -418,7 +420,7 @@ func TestGetDiskTypeMultiControllerJBODFallback(t *testing.T) {
 	_, err := ls.GetDiskType("/dev/sda", udInfo)
 	ast.NoError(err)
 	ast.True(megaraidMock.getDiskTypeCalled, "megaraid should have been tried")
-	ast.False(smartpqiMock.getDiskTypeCalled, "smartpqi should NOT be tried after break from megaraid ErrNotVirtualDrive")
+	ast.False(smartpqiMock.getDiskTypeCalled, "smartpqi should NOT be tried after break from megaraid ErrDiskTypeUndetermined")
 }
 
 // udevInfoFallbackStub returns a UdevInfo that drives getDiskType's
@@ -470,12 +472,12 @@ func TestResolveDiskType_RAIDMatchHDD(t *testing.T) {
 	ast.Equal(disko.HDD, dType)
 }
 
-// An ErrNotVirtualDrive from the controller must not propagate; resolveDiskType
+// An ErrDiskTypeUndetermined from the controller must not propagate; resolveDiskType
 // falls through to the udev classifier.
 func TestResolveDiskType_JBODFallsThroughToUdev(t *testing.T) {
 	ast := assert.New(t)
 	mock := &mockRAIDController{
-		err:           disko.ErrNotVirtualDrive,
+		err:           disko.ErrDiskTypeUndetermined,
 		isSysPathRAID: true,
 	}
 
@@ -494,7 +496,7 @@ func TestResolveDiskType_JBODFallsThroughToUdev(t *testing.T) {
 func TestResolveDiskType_WrappedJBODFallsThroughToUdev(t *testing.T) {
 	ast := assert.New(t)
 	mock := &mockRAIDController{
-		err:           fmt.Errorf("controller 0: %w", disko.ErrNotVirtualDrive),
+		err:           fmt.Errorf("controller 0: %w", disko.ErrDiskTypeUndetermined),
 		isSysPathRAID: true,
 	}
 
@@ -543,14 +545,14 @@ func TestResolveDiskType_NoRAIDMatchFallsThroughToUdev(t *testing.T) {
 	ast.Equal(disko.NVME, dType)
 }
 
-// Once a matching controller reports ErrNotVirtualDrive, iteration stops (a
+// Once a matching controller reports ErrDiskTypeUndetermined, iteration stops (a
 // JBOD on one HBA cannot simultaneously be a VD on another) and we fall
 // through to the udev classifier exactly once.
 func TestResolveDiskType_MultiControllerJBODStopsIteration(t *testing.T) {
 	ast := assert.New(t)
 
 	first := &mockRAIDController{
-		err:           disko.ErrNotVirtualDrive,
+		err:           disko.ErrDiskTypeUndetermined,
 		isSysPathRAID: true,
 	}
 	second := &mockRAIDController{

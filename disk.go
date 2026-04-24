@@ -10,11 +10,13 @@ import (
 	"machinerun.io/disko/partid"
 )
 
-// ErrNotVirtualDrive is returned by RAIDController.GetDiskType when the
-// device path does not match any virtual/logical drive on the controller.
-// This typically indicates a JBOD/passthrough disk that the OS sees through
-// the RAID HBA sysfs tree but which has no corresponding VD/LD entry.
-var ErrNotVirtualDrive = errors.New("device is not a virtual/logical drive on the RAID controller")
+// ErrDiskTypeUndetermined is returned by RAIDController.GetDiskType when
+// the controller layer cannot determine the disk type. Typical cases:
+// the device is on the controller's sysfs tree but is not a configured
+// virtual/logical drive and cannot be matched as a JBOD/passthrough
+// disk, or controller queries were inconclusive (e.g. controller tool
+// unavailable). Callers should fall back to generic udev-based detection.
+var ErrDiskTypeUndetermined = errors.New("RAID controller could not determine disk type")
 
 // DiskType enumerates supported disk types.
 type DiskType int
