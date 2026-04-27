@@ -290,6 +290,9 @@ func (ls *linuxSystem) Wipe(d disko.Disk) error {
 	return udevSettle()
 }
 
+// GetDiskType is the disko.System entry point for disk-type classification.
+// resolveDiskType also reports whether a RAID controller owns the device,
+// but external callers of GetDiskType only care about the type itself.
 func (ls *linuxSystem) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskType, error) {
 	dType, _, err := ls.resolveDiskType(path, udInfo)
 	return dType, err
@@ -302,6 +305,7 @@ func (ls *linuxSystem) resolveDiskType(devicePath string, udInfo disko.UdevInfo)
 	devpath := udInfo.Properties["DEVPATH"]
 
 	for _, ctrl := range ls.raidctrls {
+		// skip any device that isn't bound to the raid controller
 		if !ls.isSysPathRAID(devpath, ctrl.DriverSysfsPath()) {
 			continue
 		}
@@ -316,10 +320,7 @@ func (ls *linuxSystem) resolveDiskType(devicePath string, udInfo disko.UdevInfo)
 			return disko.Unknown, false, fmt.Errorf("failed to get diskType of %q from RAID controller: %s", devicePath, err)
 		}
 
-		// Defense in depth: disko.Unknown is an internal-only
-		// placeholder paired with a non-nil error. If a driver returns
-		// it with err == nil it has broken contract; surface as hard
-		// error rather than silently leak Unknown into disko.Disk.Type.
+		// RAID Controller should never return disko.Unknown with err == nil.
 		if dType == disko.Unknown {
 			return disko.Unknown, false, fmt.Errorf(
 				"RAID controller returned disko.Unknown with nil error for %q; driver contract violated",

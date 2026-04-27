@@ -290,7 +290,7 @@ func TestGetDiskTypeRAIDMatchHDD(t *testing.T) {
 	}
 
 	ls := newTestLinuxSystem(mock)
-	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}}
+	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci0000:00/0000:00:01.0/0000:01:00.0/host0/target0:2:0/0:2:0:0/block/sda"}}
 
 	dtype, err := ls.GetDiskType("/dev/sda", udInfo)
 	ast.NoError(err)
@@ -309,7 +309,7 @@ func TestGetDiskTypeRAIDMatchSSD(t *testing.T) {
 	}
 
 	ls := newTestLinuxSystem(mock)
-	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}}
+	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci0000:00/0000:00:01.0/0000:01:00.0/host0/target0:2:0/0:2:0:0/block/sda"}}
 
 	dtype, err := ls.GetDiskType("/dev/sda", udInfo)
 	ast.NoError(err)
@@ -330,7 +330,7 @@ func TestGetDiskTypeJBODFallback(t *testing.T) {
 	udInfo := disko.UdevInfo{
 		Name: "sda",
 		Properties: map[string]string{
-			"DEVPATH": "/devices/pci/host0/block/sda",
+			"DEVPATH": "/devices/pci0000:00/0000:00:01.0/0000:01:00.0/host0/target0:2:0/0:2:0:0/block/sda",
 			"ID_BUS":  "scsi",
 			"DEVTYPE": "disk",
 		},
@@ -355,7 +355,7 @@ func TestGetDiskTypeWrappedSentinelFallback(t *testing.T) {
 	}
 
 	ls := newTestLinuxSystem(mock)
-	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}}
+	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci0000:00/0000:00:01.0/0000:01:00.0/host0/target0:2:0/0:2:0:0/block/sda"}}
 
 	_, err := ls.GetDiskType("/dev/sda", udInfo)
 	ast.NoError(err, "wrapped ErrDiskTypeUndetermined should still trigger fallback via errors.Is")
@@ -371,7 +371,7 @@ func TestGetDiskTypeRAIDRealError(t *testing.T) {
 	}
 
 	ls := newTestLinuxSystem(mock)
-	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}}
+	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci0000:00/0000:00:01.0/0000:01:00.0/host0/target0:2:0/0:2:0:0/block/sda"}}
 
 	_, err := ls.GetDiskType("/dev/sda", udInfo)
 	ast.Error(err)
@@ -390,7 +390,7 @@ func TestGetDiskTypeNoRAIDMatch(t *testing.T) {
 	}
 
 	ls := newTestLinuxSystem(mock)
-	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}}
+	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci0000:00/0000:00:01.0/0000:01:00.0/host0/target0:2:0/0:2:0:0/block/sda"}}
 
 	_, err := ls.GetDiskType("/dev/sda", udInfo)
 	ast.False(mock.getDiskTypeCalled, "should not call GetDiskType when sysfs path doesn't match")
@@ -415,7 +415,7 @@ func TestGetDiskTypeMultiControllerJBODFallback(t *testing.T) {
 	}
 
 	ls := newTestLinuxSystem(megaraidMock, smartpqiMock)
-	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}}
+	udInfo := disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci0000:00/0000:00:01.0/0000:01:00.0/host0/target0:2:0/0:2:0:0/block/sda"}}
 
 	_, err := ls.GetDiskType("/dev/sda", udInfo)
 	ast.NoError(err)
@@ -448,7 +448,7 @@ func TestResolveDiskType_RAIDMatchSSD(t *testing.T) {
 	ls := newTestLinuxSystem(mock)
 
 	dType, onRAID, err := ls.resolveDiskType("/dev/sda",
-		disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}})
+		disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci0000:00/0000:00:01.0/0000:01:00.0/host0/target0:2:0/0:2:0:0/block/sda"}})
 	ast.NoError(err)
 	ast.True(onRAID)
 	ast.Equal(disko.SSD, dType)
@@ -466,7 +466,7 @@ func TestResolveDiskType_RAIDMatchHDD(t *testing.T) {
 	ls := newTestLinuxSystem(mock)
 
 	dType, onRAID, err := ls.resolveDiskType("/dev/sda",
-		disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}})
+		disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci0000:00/0000:00:01.0/0000:01:00.0/host0/target0:2:0/0:2:0:0/block/sda"}})
 	ast.NoError(err)
 	ast.True(onRAID)
 	ast.Equal(disko.HDD, dType)
@@ -484,7 +484,7 @@ func TestResolveDiskType_JBODFallsThroughToUdev(t *testing.T) {
 	ls := newTestLinuxSystem(mock)
 
 	dType, onRAID, err := ls.resolveDiskType("/dev/nvme0n1",
-		udevInfoFallbackStub("/devices/pci/host0/block/nvme0n1"))
+		udevInfoFallbackStub("/devices/pci0000:00/0000:00:1c.4/0000:04:00.0/nvme/nvme0/nvme0n1"))
 	ast.NoError(err)
 	ast.False(onRAID)
 	ast.True(mock.getDiskTypeCalled)
@@ -503,7 +503,7 @@ func TestResolveDiskType_WrappedJBODFallsThroughToUdev(t *testing.T) {
 	ls := newTestLinuxSystem(mock)
 
 	dType, onRAID, err := ls.resolveDiskType("/dev/nvme0n1",
-		udevInfoFallbackStub("/devices/pci/host0/block/nvme0n1"))
+		udevInfoFallbackStub("/devices/pci0000:00/0000:00:1c.4/0000:04:00.0/nvme/nvme0/nvme0n1"))
 	ast.NoError(err)
 	ast.False(onRAID)
 	ast.Equal(disko.NVME, dType)
@@ -521,7 +521,7 @@ func TestResolveDiskType_RealErrorIsPropagated(t *testing.T) {
 	ls := newTestLinuxSystem(mock)
 
 	_, onRAID, err := ls.resolveDiskType("/dev/sda",
-		disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}})
+		disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci0000:00/0000:00:01.0/0000:01:00.0/host0/target0:2:0/0:2:0:0/block/sda"}})
 	ast.Error(err)
 	ast.False(onRAID)
 	ast.Contains(err.Error(), "storcli binary crashed")
@@ -538,7 +538,7 @@ func TestResolveDiskType_NoRAIDMatchFallsThroughToUdev(t *testing.T) {
 	ls := newTestLinuxSystem(mock)
 
 	dType, onRAID, err := ls.resolveDiskType("/dev/nvme0n1",
-		udevInfoFallbackStub("/devices/pci/host0/block/nvme0n1"))
+		udevInfoFallbackStub("/devices/pci0000:00/0000:00:1c.4/0000:04:00.0/nvme/nvme0/nvme0n1"))
 	ast.NoError(err)
 	ast.False(onRAID)
 	ast.False(mock.getDiskTypeCalled)
@@ -563,7 +563,7 @@ func TestResolveDiskType_MultiControllerJBODStopsIteration(t *testing.T) {
 	ls := newTestLinuxSystem(first, second)
 
 	dType, onRAID, err := ls.resolveDiskType("/dev/nvme0n1",
-		udevInfoFallbackStub("/devices/pci/host0/block/nvme0n1"))
+		udevInfoFallbackStub("/devices/pci0000:00/0000:00:1c.4/0000:04:00.0/nvme/nvme0/nvme0n1"))
 	ast.NoError(err)
 	ast.False(onRAID)
 	ast.True(first.getDiskTypeCalled)
@@ -579,7 +579,7 @@ func TestResolveDiskType_NoControllersConfiguredUsesUdev(t *testing.T) {
 	ls := newTestLinuxSystem()
 
 	dType, onRAID, err := ls.resolveDiskType("/dev/nvme0n1",
-		udevInfoFallbackStub("/devices/pci/host0/block/nvme0n1"))
+		udevInfoFallbackStub("/devices/pci0000:00/0000:00:1c.4/0000:04:00.0/nvme/nvme0/nvme0n1"))
 	ast.NoError(err)
 	ast.False(onRAID)
 	ast.Equal(disko.NVME, dType)
@@ -600,7 +600,7 @@ func TestResolveDiskType_UnknownWithNilErrorIsRejected(t *testing.T) {
 	ls := newTestLinuxSystem(mock)
 
 	dType, onRAID, err := ls.resolveDiskType("/dev/sda",
-		disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci/host0/block/sda"}})
+		disko.UdevInfo{Properties: map[string]string{"DEVPATH": "/devices/pci0000:00/0000:00:01.0/0000:01:00.0/host0/target0:2:0/0:2:0:0/block/sda"}})
 	ast.Error(err)
 	ast.Contains(err.Error(), "disko.Unknown")
 	ast.Contains(err.Error(), "contract violated")

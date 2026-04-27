@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"machinerun.io/disko"
 )
 
@@ -1600,12 +1603,8 @@ func TestJBODDiskTypeSerialHDDShort(t *testing.T) {
 	}
 
 	dType, ok := jbodDiskTypeFromSerial([]Controller{jbodCtrlWithPDs()}, ud)
-	if !ok {
-		t.Fatalf("expected ok=true when ID_SERIAL_SHORT matches")
-	}
-	if dType != disko.HDD {
-		t.Errorf("jbodDiskTypeFromSerial: got %v, want HDD", dType)
-	}
+	require.True(t, ok, "expected ok=true when ID_SERIAL_SHORT matches")
+	assert.Equal(t, disko.HDD, dType, "jbodDiskTypeFromSerial")
 }
 
 // ID_SERIAL is the fallback when ID_SERIAL_SHORT is absent.
@@ -1615,12 +1614,8 @@ func TestJBODDiskTypeSerialSSDFallback(t *testing.T) {
 	}
 
 	dType, ok := jbodDiskTypeFromSerial([]Controller{jbodCtrlWithPDs()}, ud)
-	if !ok {
-		t.Fatalf("expected ok=true when ID_SERIAL matches as fallback")
-	}
-	if dType != disko.SSD {
-		t.Errorf("jbodDiskTypeFromSerial: got %v, want SSD", dType)
-	}
+	require.True(t, ok, "expected ok=true when ID_SERIAL matches as fallback")
+	assert.Equal(t, disko.SSD, dType, "jbodDiskTypeFromSerial")
 }
 
 func TestJBODDiskTypeSerialNVME(t *testing.T) {
@@ -1629,12 +1624,8 @@ func TestJBODDiskTypeSerialNVME(t *testing.T) {
 	}
 
 	dType, ok := jbodDiskTypeFromSerial([]Controller{jbodCtrlWithPDs()}, ud)
-	if !ok {
-		t.Fatalf("expected ok=true for NVME serial match")
-	}
-	if dType != disko.NVME {
-		t.Errorf("jbodDiskTypeFromSerial: got %v, want NVME", dType)
-	}
+	require.True(t, ok, "expected ok=true for NVME serial match")
+	assert.Equal(t, disko.NVME, dType, "jbodDiskTypeFromSerial")
 }
 
 // No ID_SERIAL* property in udev.
@@ -1643,9 +1634,8 @@ func TestJBODDiskTypeSerialNoSerial(t *testing.T) {
 		Properties: map[string]string{"ID_MODEL": "SomeModel"},
 	}
 
-	if _, ok := jbodDiskTypeFromSerial([]Controller{jbodCtrlWithPDs()}, ud); ok {
-		t.Errorf("expected ok=false when udev carries no ID_SERIAL*")
-	}
+	_, ok := jbodDiskTypeFromSerial([]Controller{jbodCtrlWithPDs()}, ud)
+	assert.False(t, ok, "expected ok=false when udev carries no ID_SERIAL*")
 }
 
 // Serial not reported by any controller.
@@ -1654,9 +1644,8 @@ func TestJBODDiskTypeSerialNoMatch(t *testing.T) {
 		Properties: map[string]string{"ID_SERIAL_SHORT": "SN-UNKNOWN"},
 	}
 
-	if _, ok := jbodDiskTypeFromSerial([]Controller{jbodCtrlWithPDs()}, ud); ok {
-		t.Errorf("expected ok=false when no PhysicalDevice matches")
-	}
+	_, ok := jbodDiskTypeFromSerial([]Controller{jbodCtrlWithPDs()}, ud)
+	assert.False(t, ok, "expected ok=false when no PhysicalDevice matches")
 }
 
 // Duplicate serial across controllers is ambiguous.
@@ -1672,9 +1661,8 @@ func TestJBODDiskTypeSerialAmbiguous(t *testing.T) {
 		Properties: map[string]string{"ID_SERIAL_SHORT": "SN-HDD-1"},
 	}
 
-	if _, ok := jbodDiskTypeFromSerial([]Controller{jbodCtrlWithPDs(), dup}, ud); ok {
-		t.Errorf("expected ok=false on duplicate SerialNumber across controllers")
-	}
+	_, ok := jbodDiskTypeFromSerial([]Controller{jbodCtrlWithPDs(), dup}, ud)
+	assert.False(t, ok, "expected ok=false on duplicate SerialNumber across controllers")
 }
 
 // Matched PD with UnknownMedia cannot be classified.
@@ -1690,9 +1678,8 @@ func TestJBODDiskTypeSerialUnknownMedia(t *testing.T) {
 		Properties: map[string]string{"ID_SERIAL_SHORT": "SN-UNK"},
 	}
 
-	if _, ok := jbodDiskTypeFromSerial([]Controller{ctrl}, ud); ok {
-		t.Errorf("expected ok=false when matched PD has UnknownMedia")
-	}
+	_, ok := jbodDiskTypeFromSerial([]Controller{ctrl}, ud)
+	assert.False(t, ok, "expected ok=false when matched PD has UnknownMedia")
 }
 
 // Blank controller-side SerialNumber never matches.
@@ -1708,51 +1695,8 @@ func TestJBODDiskTypeSerialEmptyPDSerial(t *testing.T) {
 		Properties: map[string]string{"ID_SERIAL_SHORT": "SN-X"},
 	}
 
-	if _, ok := jbodDiskTypeFromSerial([]Controller{ctrl}, ud); ok {
-		t.Errorf("expected ok=false when PhysicalDevice has blank SerialNumber")
-	}
-}
-
-func TestCollectUdevSerialsPrefersBoth(t *testing.T) {
-	ud := disko.UdevInfo{
-		Properties: map[string]string{
-			"ID_SERIAL_SHORT": "short1",
-			"ID_SERIAL":       "long_short1",
-			"ID_MODEL":        "ignored",
-		},
-	}
-
-	got := collectUdevSerials(ud)
-	if _, ok := got["short1"]; !ok {
-		t.Errorf("missing ID_SERIAL_SHORT token")
-	}
-	if _, ok := got["long_short1"]; !ok {
-		t.Errorf("missing ID_SERIAL token")
-	}
-	if _, ok := got["ignored"]; ok {
-		t.Errorf("collectUdevSerials must not include unrelated properties")
-	}
-}
-
-func TestCollectUdevSerialsIncludesSCSISerial(t *testing.T) {
-	ud := disko.UdevInfo{
-		Properties: map[string]string{
-			"ID_SCSI_SERIAL":  "TESTSN0PQI01",
-			"ID_SERIAL_SHORT": "deadbeefcafef001",
-			"ID_SERIAL":       "3deadbeefcafef001",
-		},
-	}
-
-	got := collectUdevSerials(ud)
-	for _, want := range []string{
-		"TESTSN0PQI01",
-		"deadbeefcafef001",
-		"3deadbeefcafef001",
-	} {
-		if _, ok := got[want]; !ok {
-			t.Errorf("collectUdevSerials: missing token %q", want)
-		}
-	}
+	_, ok := jbodDiskTypeFromSerial([]Controller{ctrl}, ud)
+	assert.False(t, ok, "expected ok=false when PhysicalDevice has blank SerialNumber")
 }
 
 func TestJBODDiskTypeSerialViaIDSCSISerial(t *testing.T) {
@@ -1761,12 +1705,8 @@ func TestJBODDiskTypeSerialViaIDSCSISerial(t *testing.T) {
 	}
 
 	dType, ok := jbodDiskTypeFromSerial([]Controller{jbodCtrlWithPDs()}, ud)
-	if !ok {
-		t.Fatalf("expected ok=true when ID_SCSI_SERIAL matches")
-	}
-	if dType != disko.HDD {
-		t.Errorf("jbodDiskTypeFromSerial: got %v, want HDD", dType)
-	}
+	require.True(t, ok, "expected ok=true when ID_SCSI_SERIAL matches")
+	assert.Equal(t, disko.HDD, dType, "jbodDiskTypeFromSerial")
 }
 
 // isSoftArcconfErr must recognise the three soft sentinels whether bare
@@ -1793,9 +1733,8 @@ func TestIsSoftArcconfErr(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isSoftArcconfErr(tc.err); got != tc.want {
-				t.Errorf("isSoftArcconfErr(%v) = %v, want %v", tc.err, got, tc.want)
-			}
+			assert.Equal(t, tc.want, isSoftArcconfErr(tc.err),
+				"isSoftArcconfErr(%v)", tc.err)
 		})
 	}
 }

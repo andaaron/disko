@@ -742,7 +742,7 @@ func isSoftStorCliErr(err error) bool {
 // across the controller's Drives. Returns ok=false on missing udev serial,
 // no match, collision, or unknown media.
 func jbodDiskTypeFromSerial(ctrl Controller, udInfo disko.UdevInfo) (disko.DiskType, bool) {
-	serials := collectUdevSerials(udInfo)
+	serials := udInfo.CollectSerials()
 	if len(serials) == 0 {
 		return disko.Unknown, false
 	}
@@ -777,24 +777,6 @@ func jbodDiskTypeFromSerial(ctrl Controller, udInfo disko.UdevInfo) (disko.DiskT
 	}
 
 	return disko.Unknown, false
-}
-
-// collectUdevSerials returns the udev tokens to match against
-// Drive.SerialNumber. storcli reports the SCSI INQUIRY page-80 serial,
-// which udev exposes as ID_SCSI_SERIAL; that's the primary key.
-// ID_SERIAL_SHORT and ID_SERIAL are WWN-derived on most SAS/SATA drives,
-// but they cover drives that don't expose a distinct VPD page-80 serial.
-func collectUdevSerials(udInfo disko.UdevInfo) map[string]struct{} {
-	out := map[string]struct{}{}
-
-	for _, key := range []string{"ID_SCSI_SERIAL", "ID_SERIAL_SHORT", "ID_SERIAL"} {
-		v := strings.TrimSpace(udInfo.Properties[key])
-		if v != "" {
-			out[v] = struct{}{}
-		}
-	}
-
-	return out
 }
 
 func (csc *cachingStorCli) DriverSysfsPath() string {

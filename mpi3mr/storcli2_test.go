@@ -7,6 +7,9 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"machinerun.io/disko"
 	"machinerun.io/disko/linux/sysfs"
 )
@@ -471,13 +474,10 @@ func TestStorCli2JBODDiskTypeHDD(t *testing.T) {
 		},
 	}
 
-	dType, ok := sc.jbodDiskTypeFromSCSI([]Controller{jbodPhysCtrl()}, disko.UdevInfo{Name: "sdb"})
-	if !ok {
-		t.Fatalf("expected ok=true on HDD JBOD match")
-	}
-	if dType != disko.HDD {
-		t.Errorf("jbodDiskTypeFromSCSI: got %v, want HDD", dType)
-	}
+	dType, ok := sc.jbodDiskTypeFromSCSI([]Controller{jbodPhysCtrl()},
+		disko.UdevInfo{Name: "sdb", Properties: map[string]string{"ID_SCSI": "1"}})
+	require.True(t, ok, "expected ok=true on HDD JBOD match")
+	assert.Equal(t, disko.HDD, dType, "jbodDiskTypeFromSCSI")
 }
 
 func TestStorCli2JBODDiskTypeSSD(t *testing.T) {
@@ -488,13 +488,10 @@ func TestStorCli2JBODDiskTypeSSD(t *testing.T) {
 		},
 	}
 
-	dType, ok := sc.jbodDiskTypeFromSCSI([]Controller{jbodPhysCtrl()}, disko.UdevInfo{Name: "sdb"})
-	if !ok {
-		t.Fatalf("expected ok=true on SSD JBOD match")
-	}
-	if dType != disko.SSD {
-		t.Errorf("jbodDiskTypeFromSCSI: got %v, want SSD", dType)
-	}
+	dType, ok := sc.jbodDiskTypeFromSCSI([]Controller{jbodPhysCtrl()},
+		disko.UdevInfo{Name: "sdb", Properties: map[string]string{"ID_SCSI": "1"}})
+	require.True(t, ok, "expected ok=true on SSD JBOD match")
+	assert.Equal(t, disko.SSD, dType, "jbodDiskTypeFromSCSI")
 }
 
 // SCSI target not reported by any controller.
@@ -506,9 +503,9 @@ func TestStorCli2JBODDiskTypeNoMatch(t *testing.T) {
 		},
 	}
 
-	if _, ok := sc.jbodDiskTypeFromSCSI([]Controller{jbodPhysCtrl()}, disko.UdevInfo{Name: "sdb"}); ok {
-		t.Errorf("expected ok=false when no PhysicalDrive matches SCSI target")
-	}
+	_, ok := sc.jbodDiskTypeFromSCSI([]Controller{jbodPhysCtrl()},
+		disko.UdevInfo{Name: "sdb", Properties: map[string]string{"ID_SCSI": "1"}})
+	assert.False(t, ok, "expected ok=false when no PhysicalDrive matches SCSI target")
 }
 
 // PID collision across controllers is ambiguous.
@@ -525,9 +522,9 @@ func TestStorCli2JBODDiskTypeAmbiguousPID(t *testing.T) {
 		},
 	}
 
-	if _, ok := sc.jbodDiskTypeFromSCSI([]Controller{jbodPhysCtrl(), other}, disko.UdevInfo{Name: "sdb"}); ok {
-		t.Errorf("expected ok=false on PID collision across controllers")
-	}
+	_, ok := sc.jbodDiskTypeFromSCSI([]Controller{jbodPhysCtrl(), other},
+		disko.UdevInfo{Name: "sdb", Properties: map[string]string{"ID_SCSI": "1"}})
+	assert.False(t, ok, "expected ok=false on PID collision across controllers")
 }
 
 // Non-SCSI device (NVMe, virtio, missing symlink).
@@ -539,9 +536,9 @@ func TestStorCli2JBODDiskTypeUnresolvedTarget(t *testing.T) {
 		},
 	}
 
-	if _, ok := sc.jbodDiskTypeFromSCSI([]Controller{jbodPhysCtrl()}, disko.UdevInfo{Name: "sdb"}); ok {
-		t.Errorf("expected ok=false when SCSI target is unresolved")
-	}
+	_, ok := sc.jbodDiskTypeFromSCSI([]Controller{jbodPhysCtrl()},
+		disko.UdevInfo{Name: "sdb", Properties: map[string]string{"ID_SCSI": "1"}})
+	assert.False(t, ok, "expected ok=false when SCSI target is unresolved")
 }
 
 // Sysfs lookup error is swallowed as a no-match.
@@ -553,17 +550,48 @@ func TestStorCli2JBODDiskTypeLookupError(t *testing.T) {
 		},
 	}
 
-	if _, ok := sc.jbodDiskTypeFromSCSI([]Controller{jbodPhysCtrl()}, disko.UdevInfo{Name: "sdb"}); ok {
-		t.Errorf("expected ok=false when SCSI lookup errors")
-	}
+	_, ok := sc.jbodDiskTypeFromSCSI([]Controller{jbodPhysCtrl()},
+		disko.UdevInfo{Name: "sdb", Properties: map[string]string{"ID_SCSI": "1"}})
+	assert.False(t, ok, "expected ok=false when SCSI lookup errors")
 }
 
 // Empty udev Name short-circuits before any sysfs call.
 func TestStorCli2JBODDiskTypeEmptyName(t *testing.T) {
 	sc := &storCli2{sysRoot: "/unused", scsiTargetFn: sysfs.ReadSCSITarget}
 
-	if _, ok := sc.jbodDiskTypeFromSCSI([]Controller{jbodPhysCtrl()}, disko.UdevInfo{}); ok {
-		t.Errorf("expected ok=false when udev Name is empty")
+	udInfo := disko.UdevInfo{Properties: map[string]string{"ID_SCSI": "1"}}
+	_, ok := sc.jbodDiskTypeFromSCSI([]Controller{jbodPhysCtrl()}, udInfo)
+	assert.False(t, ok, "expected ok=false when udev Name is empty")
+}
+
+// Non-SCSI devices (ID_SCSI != "1") must short-circuit before any sysfs
+// call so virtio-blk, NVMe, ATA/SATA etc. don't trigger spurious lookups.
+func TestStorCli2JBODDiskTypeNonSCSI(t *testing.T) {
+	called := false
+	sc := &storCli2{
+		sysRoot: "/unused",
+		scsiTargetFn: func(_, _ string) (int, bool, error) {
+			called = true
+			return 10, true, nil
+		},
+	}
+
+	cases := []struct {
+		name   string
+		udInfo disko.UdevInfo
+	}{
+		{"missing ID_SCSI", disko.UdevInfo{Name: "sdb"}},
+		{"ID_SCSI=0", disko.UdevInfo{Name: "sdb", Properties: map[string]string{"ID_SCSI": "0"}}},
+		{"NVMe-shaped", disko.UdevInfo{Name: "nvme0n1", Properties: map[string]string{"ID_MODEL": "Some NVMe"}}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			called = false
+			_, ok := sc.jbodDiskTypeFromSCSI([]Controller{jbodPhysCtrl()}, tc.udInfo)
+			assert.False(t, ok, "expected ok=false")
+			assert.False(t, called, "expected scsiTargetFn not to be called")
+		})
 	}
 }
 
@@ -591,9 +619,8 @@ func TestIsSoftStorCli2Err(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isSoftStorCli2Err(tc.err); got != tc.want {
-				t.Errorf("isSoftStorCli2Err(%v) = %v, want %v", tc.err, got, tc.want)
-			}
+			assert.Equal(t, tc.want, isSoftStorCli2Err(tc.err),
+				"isSoftStorCli2Err(%v)", tc.err)
 		})
 	}
 }

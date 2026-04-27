@@ -662,11 +662,20 @@ func isSoftStorCli2Err(err error) bool {
 		errors.Is(err, ErrUnsupported)
 }
 
-// jbodDiskTypeFromSCSI matches the Linux SCSI target T against
-// PhysicalDrive.PID across the given controllers. Returns ok=false on
-// missing kname, non-SCSI device, PID collision, or unknown medium.
+// jbodDiskTypeFromSCSI matches the Linux SCSI Target field (the third
+// component of Host:Controller:Target:LUN read from
+// /sys/block/<kname>/device) against PhysicalDrive.PID across the given
+// controllers. Returns ok=false for non-SCSI devices (udev ID_SCSI != "1"),
+// missing kname, unresolved target, PID collision, or unknown medium.
 func (sc *storCli2) jbodDiskTypeFromSCSI(ctrls []Controller, udInfo disko.UdevInfo) (disko.DiskType, bool) {
 	if sc.scsiTargetFn == nil {
+		return disko.Unknown, false
+	}
+
+	// udev sets ID_SCSI=1 only for devices that present as SCSI on a
+	// host controller. virtio-blk, NVMe and ATA/SATA do not, so we can
+	// skip the sysfs lookup for them.
+	if udInfo.Properties["ID_SCSI"] != "1" {
 		return disko.Unknown, false
 	}
 

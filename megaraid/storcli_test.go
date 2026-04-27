@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/patrickmn/go-cache"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"machinerun.io/disko"
 )
 
@@ -1503,72 +1506,35 @@ CVPM05 Optimal 34C  -    2018/10/16
 
 func TestParseCxShowCiscoJBOD(t *testing.T) {
 	vds, pds, err := parseCxShow(ciscoJBODCxShow)
-	if err != nil {
-		t.Fatalf("parseCxShow(ciscoJBODCxShow) returned error: %s", err)
-	}
+	require.NoError(t, err, "parseCxShow(ciscoJBODCxShow)")
 
-	if len(vds) != 0 {
-		t.Errorf("expected 0 virtual drives, got %d", len(vds))
-	}
-
-	if len(pds) != 5 {
-		t.Errorf("expected 5 physical drives, got %d", len(pds))
-	}
+	assert.Empty(t, vds, "virtual drives")
+	require.Len(t, pds, 5, "physical drives")
 
 	for _, pd := range pds {
-		if pd.State != "JBOD" {
-			t.Errorf("drive %d: expected State=JBOD, got %q", pd.ID, pd.State)
-		}
-
-		if pd.DriveGroup != -1 {
-			t.Errorf("drive %d: expected DriveGroup=-1 (JBOD), got %d", pd.ID, pd.DriveGroup)
-		}
+		assert.Equal(t, "JBOD", pd.State, "drive %d: State", pd.ID)
+		assert.Equal(t, -1, pd.DriveGroup, "drive %d: DriveGroup (JBOD)", pd.ID)
 	}
 
-	ssd := pds[1]
-	if ssd.MediaType != SSD {
-		t.Errorf("drive 1 (slot 2): expected SSD, got %s", ssd.MediaType)
-	}
-
-	hdd := pds[0]
-	if hdd.MediaType != HDD {
-		t.Errorf("drive 0 (slot 3): expected HDD, got %s", hdd.MediaType)
-	}
+	assert.Equal(t, SSD, pds[1].MediaType, "drive 1 (slot 2)")
+	assert.Equal(t, HDD, pds[0].MediaType, "drive 0 (slot 3)")
 }
 
 func TestParseVirtPropertiesCiscoJBOD(t *testing.T) {
 	propMap, err := parseVirtProperties(ciscoJBODCxVallShowAll)
-	if err != nil {
-		t.Fatalf("parseVirtProperties(ciscoJBODCxVallShowAll) returned error: %s", err)
-	}
-
-	if len(propMap) != 0 {
-		t.Errorf("expected 0 VD properties, got %d", len(propMap))
-	}
+	require.NoError(t, err, "parseVirtProperties(ciscoJBODCxVallShowAll)")
+	assert.Empty(t, propMap, "VD properties")
 }
 
 func TestNewControllerCiscoJBOD(t *testing.T) {
 	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll,
 		ciscoJBODCxEallSallShowAll)
-	if err != nil {
-		t.Fatalf("newController failed: %s", err)
-	}
+	require.NoError(t, err, "newController")
 
-	if ctrl.ID != 0 {
-		t.Errorf("expected controller ID 0, got %d", ctrl.ID)
-	}
-
-	if len(ctrl.VirtDrives) != 0 {
-		t.Errorf("expected 0 VirtDrives, got %d", len(ctrl.VirtDrives))
-	}
-
-	if len(ctrl.Drives) != 5 {
-		t.Errorf("expected 5 Drives, got %d", len(ctrl.Drives))
-	}
-
-	if len(ctrl.DriveGroups) != 0 {
-		t.Errorf("expected 0 DriveGroups (JBOD has no drive groups), got %d", len(ctrl.DriveGroups))
-	}
+	assert.Equal(t, 0, ctrl.ID, "controller ID")
+	assert.Empty(t, ctrl.VirtDrives, "VirtDrives")
+	assert.Len(t, ctrl.Drives, 5, "Drives")
+	assert.Empty(t, ctrl.DriveGroups, "DriveGroups (JBOD has no drive groups)")
 
 	// Drives indexed by DID. Slot 2 is the SSD (DID=1); slot 3 is HDD (DID=0).
 	wantSerials := map[int]string{
@@ -1580,20 +1546,14 @@ func TestNewControllerCiscoJBOD(t *testing.T) {
 	}
 	for did, want := range wantSerials {
 		d := ctrl.Drives[did]
-		if d == nil {
-			t.Fatalf("drive DID=%d missing", did)
-		}
-		if d.SerialNumber != want {
-			t.Errorf("drive DID=%d: SerialNumber=%q, want %q", did, d.SerialNumber, want)
-		}
+		require.NotNil(t, d, "drive DID=%d missing", did)
+		assert.Equal(t, want, d.SerialNumber, "drive DID=%d: SerialNumber", did)
 	}
 }
 
 func TestParseDriveSerialsCiscoJBOD(t *testing.T) {
 	got, err := parseDriveSerials(ciscoJBODCxEallSallShowAll)
-	if err != nil {
-		t.Fatalf("parseDriveSerials returned error: %s", err)
-	}
+	require.NoError(t, err, "parseDriveSerials")
 
 	want := map[driveKey]string{
 		{EID: 134, Slot: 2}: "SNTEST001",
@@ -1602,19 +1562,13 @@ func TestParseDriveSerialsCiscoJBOD(t *testing.T) {
 		{EID: 134, Slot: 5}: "SNTEST004",
 		{EID: 134, Slot: 6}: "SNTEST005",
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("parseDriveSerials mismatch:\n got=%v\nwant=%v", got, want)
-	}
+	assert.Equal(t, want, got, "parseDriveSerials")
 }
 
 func TestParseDriveSerialsEmpty(t *testing.T) {
 	got, err := parseDriveSerials("")
-	if err != nil {
-		t.Fatalf("parseDriveSerials(\"\") returned error: %s", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("expected empty map, got %v", got)
-	}
+	require.NoError(t, err, `parseDriveSerials("")`)
+	assert.Empty(t, got, "expected empty map")
 }
 
 type mockMegaRaid struct {
@@ -1637,9 +1591,7 @@ func (m *mockMegaRaid) DriverSysfsPath() string {
 func TestGetDiskTypeJBODReturnsErrDiskTypeUndetermined(t *testing.T) {
 	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll,
 		ciscoJBODCxEallSallShowAll)
-	if err != nil {
-		t.Fatalf("newController failed: %s", err)
-	}
+	require.NoError(t, err, "newController")
 
 	csc := &cachingStorCli{
 		mr:    &mockMegaRaid{ctrl: ctrl, err: nil},
@@ -1649,13 +1601,10 @@ func TestGetDiskTypeJBODReturnsErrDiskTypeUndetermined(t *testing.T) {
 	// No udev serial => JBOD matching fails => sentinel for udev fallback.
 	for _, path := range []string{"/dev/sda", "/dev/sdb", "/dev/sdc"} {
 		dtype, err := csc.GetDiskType(path, disko.UdevInfo{})
-		if !errors.Is(err, disko.ErrDiskTypeUndetermined) {
-			t.Errorf("GetDiskType(%q): expected ErrDiskTypeUndetermined, got %v", path, err)
-		}
-
-		if dtype != disko.Unknown {
-			t.Errorf("GetDiskType(%q): expected disko.Unknown placeholder, got %d", path, dtype)
-		}
+		assert.ErrorIs(t, err, disko.ErrDiskTypeUndetermined,
+			"GetDiskType(%q): expected ErrDiskTypeUndetermined", path)
+		assert.Equal(t, disko.Unknown, dtype,
+			"GetDiskType(%q): expected disko.Unknown placeholder", path)
 	}
 }
 
@@ -1668,9 +1617,8 @@ func TestGetDiskTypeSoftQueryFailureReturnsSentinel(t *testing.T) {
 	}
 
 	_, err := csc.GetDiskType("/dev/sda", disko.UdevInfo{})
-	if !errors.Is(err, disko.ErrDiskTypeUndetermined) {
-		t.Errorf("expected ErrDiskTypeUndetermined on soft storcli failure, got %v", err)
-	}
+	assert.ErrorIs(t, err, disko.ErrDiskTypeUndetermined,
+		"expected ErrDiskTypeUndetermined on soft storcli failure")
 }
 
 // A hard storcli error must propagate unchanged (it is not the sentinel).
@@ -1682,12 +1630,9 @@ func TestGetDiskTypeHardQueryFailurePropagates(t *testing.T) {
 	}
 
 	_, err := csc.GetDiskType("/dev/sda", disko.UdevInfo{})
-	if errors.Is(err, disko.ErrDiskTypeUndetermined) {
-		t.Error("hard storcli error should NOT be treated as the sentinel")
-	}
-	if err == nil {
-		t.Error("hard storcli error must propagate")
-	}
+	assert.NotErrorIs(t, err, disko.ErrDiskTypeUndetermined,
+		"hard storcli error should NOT be treated as the sentinel")
+	assert.Error(t, err, "hard storcli error must propagate")
 }
 
 // newJBODCachingStorCli wires the Cisco JBOD fixture (with serials from
@@ -1697,9 +1642,7 @@ func newJBODCachingStorCli(t *testing.T) *cachingStorCli {
 
 	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll,
 		ciscoJBODCxEallSallShowAll)
-	if err != nil {
-		t.Fatalf("newController failed: %s", err)
-	}
+	require.NoError(t, err, "newController")
 
 	return &cachingStorCli{
 		mr:    &mockMegaRaid{ctrl: ctrl, err: nil},
@@ -1715,12 +1658,8 @@ func TestGetDiskTypeJBODSerialMatchSSD(t *testing.T) {
 		Properties: map[string]string{"ID_SERIAL_SHORT": "SNTEST001"},
 	}
 	dtype, err := csc.GetDiskType("/dev/sdb", ud)
-	if err != nil {
-		t.Fatalf("expected nil err for SSD JBOD match, got %v", err)
-	}
-	if dtype != disko.SSD {
-		t.Errorf("GetDiskType: got %v, want SSD", dtype)
-	}
+	require.NoError(t, err, "expected nil err for SSD JBOD match")
+	assert.Equal(t, disko.SSD, dtype, "GetDiskType")
 }
 
 // HDD serial (slot 3) resolves via ID_SERIAL_SHORT.
@@ -1731,12 +1670,8 @@ func TestGetDiskTypeJBODSerialMatchHDD(t *testing.T) {
 		Properties: map[string]string{"ID_SERIAL_SHORT": "SNTEST002"},
 	}
 	dtype, err := csc.GetDiskType("/dev/sdb", ud)
-	if err != nil {
-		t.Fatalf("expected nil err for HDD JBOD match, got %v", err)
-	}
-	if dtype != disko.HDD {
-		t.Errorf("GetDiskType: got %v, want HDD", dtype)
-	}
+	require.NoError(t, err, "expected nil err for HDD JBOD match")
+	assert.Equal(t, disko.HDD, dtype, "GetDiskType")
 }
 
 // ID_SERIAL alone (no ID_SERIAL_SHORT) still matches when it equals the SN.
@@ -1747,12 +1682,8 @@ func TestGetDiskTypeJBODSerialViaIDSerialFallback(t *testing.T) {
 		Properties: map[string]string{"ID_SERIAL": "SNTEST001"},
 	}
 	dtype, err := csc.GetDiskType("/dev/sdb", ud)
-	if err != nil {
-		t.Fatalf("expected nil err for ID_SERIAL fallback match, got %v", err)
-	}
-	if dtype != disko.SSD {
-		t.Errorf("GetDiskType: got %v, want SSD", dtype)
-	}
+	require.NoError(t, err, "expected nil err for ID_SERIAL fallback match")
+	assert.Equal(t, disko.SSD, dtype, "GetDiskType")
 }
 
 func TestGetDiskTypeJBODSerialViaIDSCSISerial(t *testing.T) {
@@ -1766,12 +1697,8 @@ func TestGetDiskTypeJBODSerialViaIDSCSISerial(t *testing.T) {
 		},
 	}
 	dtype, err := csc.GetDiskType("/dev/sdb", ud)
-	if err != nil {
-		t.Fatalf("expected nil err for ID_SCSI_SERIAL match, got %v", err)
-	}
-	if dtype != disko.SSD {
-		t.Errorf("GetDiskType: got %v, want SSD", dtype)
-	}
+	require.NoError(t, err, "expected nil err for ID_SCSI_SERIAL match")
+	assert.Equal(t, disko.SSD, dtype, "GetDiskType")
 }
 
 // Serial not in fixture falls through to ErrDiskTypeUndetermined.
@@ -1782,18 +1709,15 @@ func TestGetDiskTypeJBODSerialNoMatch(t *testing.T) {
 		Properties: map[string]string{"ID_SERIAL_SHORT": "NOSUCHSERIAL"},
 	}
 	_, err := csc.GetDiskType("/dev/sdb", ud)
-	if !errors.Is(err, disko.ErrDiskTypeUndetermined) {
-		t.Errorf("expected ErrDiskTypeUndetermined for unknown serial, got %v", err)
-	}
+	assert.ErrorIs(t, err, disko.ErrDiskTypeUndetermined,
+		"expected ErrDiskTypeUndetermined for unknown serial")
 }
 
 // When the /eall/sall detail query was unavailable (empty string), drives
 // carry no SerialNumber and JBOD matching correctly fails over to udev.
 func TestGetDiskTypeJBODEmptyDetailOutputFallsThrough(t *testing.T) {
 	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll, "")
-	if err != nil {
-		t.Fatalf("newController failed: %s", err)
-	}
+	require.NoError(t, err, "newController")
 
 	csc := &cachingStorCli{
 		mr:    &mockMegaRaid{ctrl: ctrl, err: nil},
@@ -1804,9 +1728,8 @@ func TestGetDiskTypeJBODEmptyDetailOutputFallsThrough(t *testing.T) {
 		Properties: map[string]string{"ID_SERIAL_SHORT": "SNTEST001"},
 	}
 	_, err = csc.GetDiskType("/dev/sdb", ud)
-	if !errors.Is(err, disko.ErrDiskTypeUndetermined) {
-		t.Errorf("expected ErrDiskTypeUndetermined with no serials, got %v", err)
-	}
+	assert.ErrorIs(t, err, disko.ErrDiskTypeUndetermined,
+		"expected ErrDiskTypeUndetermined with no serials")
 }
 
 // isSoftStorCliErr must recognise the three soft sentinels whether bare
@@ -1832,9 +1755,8 @@ func TestIsSoftStorCliErr(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isSoftStorCliErr(tc.err); got != tc.want {
-				t.Errorf("isSoftStorCliErr(%v) = %v, want %v", tc.err, got, tc.want)
-			}
+			assert.Equal(t, tc.want, isSoftStorCliErr(tc.err),
+				"isSoftStorCliErr(%v)", tc.err)
 		})
 	}
 }

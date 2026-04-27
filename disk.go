@@ -503,6 +503,30 @@ type UdevInfo struct {
 	Properties map[string]string `json:"properties"`
 }
 
+// CollectSerials returns the set of udev serial-style tokens that
+// identify this device. Used by RAID drivers (megaraid, smartpqi) to
+// correlate a Linux device with a controller-reported physical drive
+// serial number.
+//
+// Controllers typically expose the SCSI INQUIRY page-80 serial, which
+// udev surfaces as ID_SCSI_SERIAL on SCSI-class devices and is the
+// primary key. ID_SERIAL_SHORT and ID_SERIAL are WWN-derived on most
+// SAS/SATA drives but cover drives that don't expose a distinct VPD
+// page-80 serial. All non-empty values are returned so callers can match
+// any of them against a controller record.
+func (u UdevInfo) CollectSerials() map[string]struct{} {
+	out := map[string]struct{}{}
+
+	for _, key := range []string{"ID_SCSI_SERIAL", "ID_SERIAL_SHORT", "ID_SERIAL"} {
+		v := strings.TrimSpace(u.Properties[key])
+		if v != "" {
+			out[v] = struct{}{}
+		}
+	}
+
+	return out
+}
+
 // PartitionSet is a map of partition number to the partition.
 type PartitionSet map[uint]Partition
 
