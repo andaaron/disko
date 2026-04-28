@@ -78,6 +78,6 @@ func TestReadSCSITargetBadTarget(t *testing.T) {
 
 func TestReadSCSITargetEmptyKname(t *testing.T) {
 	_, ok, err := ReadSCSITarget("/sys", "")
-	require.NoError(t, err)
+	require.Error(t, err, "expected error for empty kname")
 	assert.False(t, ok, "expected ok=false for empty kname")
 }

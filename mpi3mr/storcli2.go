@@ -707,6 +707,8 @@ func (sc *storCli2) jbodDiskTypeFromSCSI(ctrls []Controller, udInfo disko.UdevIn
 		return disko.SSD, true
 	case "HDD":
 		return disko.HDD, true
+	case "NVME":
+		return disko.NVME, true
 	}
 
 	return disko.Unknown, false

@@ -23,13 +23,14 @@ import (
 //
 // Callers must only invoke ReadSCSITarget for devices that udev reports as
 // SCSI (ID_SCSI=1); virtio-blk, NVMe, ATA/SATA, etc. do not expose this
-// symlink and should be filtered upstream. ok=false with a nil error is
-// reserved for benign cases (empty kname, missing "device" symlink); a
-// malformed Host:Channel:Target:LUN link target is reported as an
-// error. sysRoot is injectable for tests; production passes "/sys".
+// symlink and should be filtered upstream. An empty kname is a caller bug
+// and is rejected with an error; ok=false with a nil error is reserved for
+// the benign missing-"device"-symlink case; a malformed
+// Host:Channel:Target:LUN link target is reported as an error. sysRoot is
+// injectable for tests; production passes "/sys".
 func ReadSCSITarget(sysRoot, kname string) (target int, ok bool, err error) {
 	if kname == "" {
-		return 0, false, nil
+		return 0, false, fmt.Errorf("invalid empty kname parameter")
 	}
 
 	link := filepath.Join(sysRoot, "block", kname, "device")

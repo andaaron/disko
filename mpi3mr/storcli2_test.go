@@ -494,6 +494,29 @@ func TestStorCli2JBODDiskTypeSSD(t *testing.T) {
 	assert.Equal(t, disko.SSD, dType, "jbodDiskTypeFromSCSI")
 }
 
+// Tri-mode controllers can report Medium="NVMe" for NVMe JBODs. The
+// production short-circuit on ID_SCSI=1 keeps real NVMe drives from
+// reaching this switch, but exercising the case directly with a fake
+// fixture pins the parity with megaraid's jbodDiskTypeFromSerial.
+func TestStorCli2JBODDiskTypeNVMe(t *testing.T) {
+	ctrl := Controller{
+		PhysicalDrives: PhysicalDriveSet{
+			"30": PhysicalDrive{PID: 30, Medium: "NVMe", State: "JBOD"},
+		},
+	}
+	sc := &storCli2{
+		sysRoot: "/unused",
+		scsiTargetFn: func(_, kname string) (int, bool, error) {
+			return 30, true, nil
+		},
+	}
+
+	dType, ok := sc.jbodDiskTypeFromSCSI([]Controller{ctrl},
+		disko.UdevInfo{Name: "sdb", Properties: map[string]string{"ID_SCSI": "1"}})
+	require.True(t, ok, "expected ok=true on NVMe JBOD match")
+	assert.Equal(t, disko.NVME, dType, "jbodDiskTypeFromSCSI")
+}
+
 // SCSI target not reported by any controller.
 func TestStorCli2JBODDiskTypeNoMatch(t *testing.T) {
 	sc := &storCli2{
