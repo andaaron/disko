@@ -663,7 +663,7 @@ func isSoftStorCli2Err(err error) bool {
 }
 
 // jbodDiskTypeFromSCSI matches the Linux SCSI Target field (the third
-// component of Host:Controller:Target:LUN read from
+// component of Host:Channel:Target:LUN read from
 // /sys/block/<kname>/device) against PhysicalDrive.PID across the given
 // controllers. Returns ok=false for non-SCSI devices (udev ID_SCSI != "1"),
 // missing kname, unresolved target, PID collision, or unknown medium.

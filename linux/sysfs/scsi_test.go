@@ -11,7 +11,7 @@ import (
 
 // makeBlockDeviceSymlink wires up a fake sysfs entry at
 // <root>/block/<kname>/device pointing at
-// ../../scsi_device/<host:controller:target:lun>.
+// ../../scsi_device/<host:channel:target:lun>.
 func makeBlockDeviceSymlink(t *testing.T, root, kname, hctl string) {
 	t.Helper()
 
@@ -36,7 +36,7 @@ func TestReadSCSITargetJBOD(t *testing.T) {
 	assert.Equal(t, 3, target, "target")
 }
 
-// An NVMe/virtio-style block device has no Host:Controller:Target:LUN
+// An NVMe/virtio-style block device has no Host:Channel:Target:LUN
 // "device" symlink.
 // ReadSCSITarget must report ok=false (not an error) so the caller can
 // fall through to generic udev detection.
@@ -49,7 +49,7 @@ func TestReadSCSITargetNoDevice(t *testing.T) {
 	assert.False(t, ok, "expected ok=false when device symlink is absent")
 }
 
-// A "device" symlink whose last segment isn't Host:Controller:Target:LUN
+// A "device" symlink whose last segment isn't Host:Channel:Target:LUN
 // (e.g. points at a PCI node) is malformed for a SCSI block device and
 // should be reported as an error so the caller can log/diagnose. Callers
 // are expected to filter non-SCSI devices upstream via udev (ID_SCSI=1).
@@ -63,8 +63,8 @@ func TestReadSCSITargetNonHCTL(t *testing.T) {
 		filepath.Join(blockDir, "device")))
 
 	_, ok, err := ReadSCSITarget(root, "vda")
-	require.Error(t, err, "expected error for malformed Host:Controller:Target:LUN link target")
-	assert.False(t, ok, "expected ok=false when link target is not Host:Controller:Target:LUN")
+	require.Error(t, err, "expected error for malformed Host:Channel:Target:LUN link target")
+	assert.False(t, ok, "expected ok=false when link target is not Host:Channel:Target:LUN")
 }
 
 func TestReadSCSITargetBadTarget(t *testing.T) {

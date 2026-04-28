@@ -10,7 +10,7 @@ import (
 )
 
 // ReadSCSITarget returns Target from /sys/block/<kname>/device ->
-// Host:Controller:Target:LUN. For SCSI-attached JBOD/passthrough disks
+// Host:Channel:Target:LUN (H:C:T:L). For SCSI-attached JBOD/passthrough disks
 // behind a RAID HBA, Target matches the controller-reported drive ID
 // (megaraid Drive.DID, mpi3mr PhysicalDrive.PID), which lets callers
 // correlate a Linux block device with an entry in the controller's PD list.
@@ -25,7 +25,7 @@ import (
 // SCSI (ID_SCSI=1); virtio-blk, NVMe, ATA/SATA, etc. do not expose this
 // symlink and should be filtered upstream. ok=false with a nil error is
 // reserved for benign cases (empty kname, missing "device" symlink); a
-// malformed Host:Controller:Target:LUN link target is reported as an
+// malformed Host:Channel:Target:LUN link target is reported as an
 // error. sysRoot is injectable for tests; production passes "/sys".
 func ReadSCSITarget(sysRoot, kname string) (target int, ok bool, err error) {
 	if kname == "" {
@@ -51,7 +51,7 @@ func ReadSCSITarget(sysRoot, kname string) (target int, ok bool, err error) {
 	const requiredHCTLFields = 4
 	if len(hctlFields) != requiredHCTLFields {
 		return 0, false, fmt.Errorf(
-			"invalid SCSI Host:Controller:Target:LUN value %q from %q: expected %d fields, got %d",
+			"invalid SCSI Host:Channel:Target:LUN value %q from %q: expected %d fields, got %d",
 			scsiDeviceID, link, requiredHCTLFields, len(hctlFields))
 	}
 
