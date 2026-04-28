@@ -1,6 +1,7 @@
 package linux
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"golang.org/x/sys/unix"
 	"machinerun.io/disko"
+	"machinerun.io/disko/linux/sysfs"
 	"machinerun.io/disko/megaraid"
 	"machinerun.io/disko/mpi3mr"
 	"machinerun.io/disko/smartpqi"
@@ -18,6 +20,10 @@ import (
 
 type linuxSystem struct {
 	raidctrls []RAIDController
+	// isSysPathRAID resolves whether a udev DEVPATH belongs to the driver
+	// rooted at driverSysPath. It defaults to sysfs.IsSysPathRAID in
+	// production; tests inject a stub to avoid touching real /sys.
+	isSysPathRAID func(syspath, driverSysPath string) bool
 }
 
 // System returns an linux specific implementation of disko.System interface.
@@ -28,6 +34,7 @@ func System() disko.System {
 			smartpqi.ArcConf(),
 			mpi3mr.StorCli2(),
 		},
+		isSysPathRAID: sysfs.IsSysPathRAID,
 	}
 }
 
@@ -161,28 +168,14 @@ func (ls *linuxSystem) ScanDisk(devicePath string) (disko.Disk, error) {
 
 		attachType = getAttachType(udInfo)
 
-		for _, ctrl := range ls.raidctrls {
-			if IsSysPathRAID(udInfo.Properties["DEVPATH"], ctrl.DriverSysfsPath()) {
-				// we know this is device is part of a raid, so if we cannot get
-				// disk type we must return an error
-				dType, err := ctrl.GetDiskType(devicePath)
-				if err != nil {
-					return disko.Disk{}, fmt.Errorf("failed to get diskType of %q from RAID controller: %s", devicePath, err)
-				}
-
-				attachType = disko.RAID
-				diskType = dType
-
-				break
-			}
+		var onRAID bool
+		diskType, onRAID, err = ls.resolveDiskType(devicePath, udInfo)
+		if err != nil {
+			return disko.Disk{}, fmt.Errorf("error while getting disk type: %s", err)
 		}
 
-		// check disk type if it wasn't on raid
-		if attachType != disko.RAID {
-			diskType, err = getDiskType(udInfo)
-			if err != nil {
-				return disko.Disk{}, fmt.Errorf("error while getting disk type: %s", err)
-			}
+		if onRAID {
+			attachType = disko.RAID
 		}
 
 		ro, err = getDiskReadOnly(name)
@@ -297,16 +290,50 @@ func (ls *linuxSystem) Wipe(d disko.Disk) error {
 	return udevSettle()
 }
 
+// GetDiskType is the disko.System entry point for disk-type classification.
+// resolveDiskType also reports whether a RAID controller owns the device,
+// but external callers of GetDiskType only care about the type itself.
 func (ls *linuxSystem) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskType, error) {
+	dType, _, err := ls.resolveDiskType(path, udInfo)
+	return dType, err
+}
+
+// resolveDiskType classifies devicePath. Returns (type, true, nil) when a
+// RAID controller owns the virtual/logical drive; otherwise (non-RAID or
+// ErrDiskTypeUndetermined) falls back to getDiskType(udInfo) with bool=false.
+func (ls *linuxSystem) resolveDiskType(devicePath string, udInfo disko.UdevInfo) (disko.DiskType, bool, error) {
+	devpath := udInfo.Properties["DEVPATH"]
+
 	for _, ctrl := range ls.raidctrls {
-		if IsSysPathRAID(udInfo.Properties["DEVPATH"], ctrl.DriverSysfsPath()) {
-			dType, err := ctrl.GetDiskType(path)
-			if err != nil {
-				return disko.HDD, fmt.Errorf("failed to get diskType of %q from RAID controller: %s", path, err)
+		// skip any device that isn't bound to the raid controller
+		if !ls.isSysPathRAID(devpath, ctrl.DriverSysfsPath()) {
+			continue
+		}
+
+		dType, err := ctrl.GetDiskType(devicePath, udInfo)
+		if err != nil {
+			if errors.Is(err, disko.ErrDiskTypeUndetermined) {
+				log.Printf("RAID controller could not determine disk type for %q, using generic detection", devicePath)
+				break
 			}
 
-			return dType, nil
+			return disko.Unknown, false, fmt.Errorf("failed to get diskType of %q from RAID controller: %s", devicePath, err)
 		}
+
+		// RAID Controller should never return disko.Unknown with err == nil.
+		if dType == disko.Unknown {
+			return disko.Unknown, false, fmt.Errorf(
+				"RAID controller returned disko.Unknown with nil error for %q; driver contract violated",
+				devicePath)
+		}
+
+		return dType, true, nil
 	}
-	return getDiskType(udInfo)
+
+	dType, err := getDiskType(udInfo)
+	if err != nil {
+		return disko.Unknown, false, err
+	}
+
+	return dType, false, nil
 }

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"machinerun.io/disko"
 	"machinerun.io/disko/partid"
 )
@@ -393,4 +395,60 @@ func TestMarshalProperties(t *testing.T) {
 				string(found), table.expected)
 		}
 	}
+}
+
+func TestUdevInfoCollectSerialsPrefersBoth(t *testing.T) {
+	ud := disko.UdevInfo{
+		Properties: map[string]string{
+			"ID_SERIAL_SHORT": "short1",
+			"ID_SERIAL":       "long_short1",
+			"ID_MODEL":        "ignored",
+		},
+	}
+
+	got := ud.CollectSerials()
+	assert.Contains(t, got, "short1", "missing ID_SERIAL_SHORT token")
+	assert.Contains(t, got, "long_short1", "missing ID_SERIAL token")
+	assert.NotContains(t, got, "ignored",
+		"CollectSerials must not include unrelated properties")
+}
+
+func TestUdevInfoCollectSerialsIncludesSCSISerial(t *testing.T) {
+	ud := disko.UdevInfo{
+		Properties: map[string]string{
+			"ID_SCSI_SERIAL":  "TESTSN0PQI01",
+			"ID_SERIAL_SHORT": "deadbeefcafef001",
+			"ID_SERIAL":       "3deadbeefcafef001",
+		},
+	}
+
+	got := ud.CollectSerials()
+	for _, want := range []string{
+		"TESTSN0PQI01",
+		"deadbeefcafef001",
+		"3deadbeefcafef001",
+	} {
+		assert.Contains(t, got, want, "CollectSerials: missing token %q", want)
+	}
+}
+
+// Whitespace-only values must not be returned as serial tokens; otherwise
+// a controller record with a blank SerialNumber could match every device.
+func TestUdevInfoCollectSerialsTrimsWhitespace(t *testing.T) {
+	ud := disko.UdevInfo{
+		Properties: map[string]string{
+			"ID_SCSI_SERIAL":  "   ",
+			"ID_SERIAL_SHORT": "",
+			"ID_SERIAL":       "real-serial",
+		},
+	}
+
+	got := ud.CollectSerials()
+	assert.Contains(t, got, "real-serial", "missing real serial token")
+	assert.Len(t, got, 1, "expected only the non-empty token")
+}
+
+func TestUdevInfoCollectSerialsEmpty(t *testing.T) {
+	got := disko.UdevInfo{}.CollectSerials()
+	assert.Empty(t, got, "expected empty map for empty UdevInfo")
 }

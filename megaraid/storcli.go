@@ -2,6 +2,7 @@ package megaraid
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -44,10 +45,9 @@ type scResultSection struct {
 }
 
 func (sc *storCli) Query(cID int) (Controller, error) {
-	// run /c0 show all
-	//   - get PDs and VDs
-	// run /c0/vall show all
-	//   - populate VD Properties and Path
+	// run /cN show          - get PDs and VDs
+	// run /cN/vall show all - populate VD Properties and Path
+	// run /cN/eall/sall show all - populate Drive.SerialNumber (best-effort)
 	var stdout, stderr []byte
 	var rc int
 
@@ -72,23 +72,27 @@ func (sc *storCli) Query(cID int) (Controller, error) {
 
 	cxVxOut := string(stdout)
 
-	return newController(cID, cxDxOut, cxVxOut)
+	// Best-effort: an error here leaves Drive.SerialNumber empty, which
+	// disables JBOD matching but does not break VD classification.
+	args = []string{fmt.Sprintf("/c%d/eall/sall", cID), "show", "all", "nolog"}
+	stdout, _, rc = storcli(args...)
+	cxEallSallOut := ""
+	if rc == 0 {
+		cxEallSallOut = string(stdout)
+	}
+
+	return newController(cID, cxDxOut, cxVxOut, cxEallSallOut)
 }
 
 func (sc *storCli) DriverSysfsPath() string {
 	return SysfsPCIDriversPath
 }
 
-func (sc *storCli) GetDiskType(path string) (disko.DiskType, error) {
-	return disko.HDD, fmt.Errorf("missing controller to run query")
+func (sc *storCli) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskType, error) {
+	return disko.Unknown, fmt.Errorf("missing controller to run query")
 }
 
-// not implemented in driver layer
-func (sc *storCli) IsSysPathRAID(syspath string) bool {
-	return false
-}
-
-func newController(cID int, cxDxOut string, cxVxOut string) (Controller, error) {
+func newController(cID int, cxDxOut, cxVxOut, cxEallSallOut string) (Controller, error) {
 	const pathPropName = "OS Drive Name"
 
 	ctrl := Controller{
@@ -116,6 +120,15 @@ func newController(cID int, cxDxOut string, cxVxOut string) (Controller, error) 
 		ctrl.VirtDrives[vID].Path = vProps[pathPropName]
 	}
 
+	// Best-effort: ignore parse errors; drives just keep empty SNs.
+	if serials, sErr := parseDriveSerials(cxEallSallOut); sErr == nil {
+		for _, drive := range pds {
+			if sn, ok := serials[driveKey{EID: drive.EID, Slot: drive.Slot}]; ok {
+				drive.SerialNumber = sn
+			}
+		}
+	}
+
 	for diskID, drive := range pds {
 		dgID := drive.DriveGroup
 		if dgID < 0 {
@@ -133,9 +146,6 @@ func newController(cID int, cxDxOut string, cxVxOut string) (Controller, error) 
 			}
 		}
 	}
-
-	// fmt.Printf("ctrl: %#v\n", propMap)
-	// fmt.Printf("ctrl: %#v\n", ctrl)
 
 	return ctrl, nil
 }
@@ -451,6 +461,71 @@ func parseVirtProperties(cmdOut string) (map[int](map[string]string), error) {
 	return vdmap, nil
 }
 
+// driveKey identifies a physical drive by (enclosure, slot) for
+// cross-referencing parsed 'storcli /cN' and '/cN/eall/sall' outputs.
+type driveKey struct {
+	EID  int
+	Slot int
+}
+
+// parseDriveSerials extracts (EID, Slot) -> SN from the output of
+// 'storcli /cN/eall/sall show all'. Returns an empty map (with nil error)
+// for empty input, so callers can feed in a best-effort string.
+func parseDriveSerials(cmdOut string) (map[driveKey]string, error) {
+	out := map[driveKey]string{}
+
+	if strings.TrimSpace(cmdOut) == "" {
+		return out, nil
+	}
+
+	// Surface Success/Failure/Unsupported via the standard header block.
+	for _, sect := range loadSections(cmdOut) {
+		if sect.Type == rsHeader {
+			if err := getHeaderError(parseKeyValData(sect.Lines)); err != nil {
+				return out, err
+			}
+			break
+		}
+	}
+
+	// Any line starting with "Drive /cX/eY/sZ " updates the current
+	// drive context (covers the summary, state, attributes, etc.
+	// sub-sections). The drive's SN appears later in the attributes
+	// sub-section.
+	driveHdr := regexp.MustCompile(`^Drive /c\d+/e(\d+)/s(\d+)\b`)
+	snLine := regexp.MustCompile(`^SN\s*=\s*(.*\S)\s*$`)
+
+	var cur *driveKey
+
+	for _, line := range strings.Split(cmdOut, "\n") {
+		if m := driveHdr.FindStringSubmatch(line); m != nil {
+			eid, err := strconv.Atoi(m[1])
+			if err != nil {
+				cur = nil
+				continue
+			}
+			slot, err := strconv.Atoi(m[2])
+			if err != nil {
+				cur = nil
+				continue
+			}
+			k := driveKey{EID: eid, Slot: slot}
+			cur = &k
+			continue
+		}
+
+		if cur == nil {
+			continue
+		}
+
+		if m := snLine.FindStringSubmatch(line); m != nil {
+			out[*cur] = m[1]
+		}
+	}
+
+	return out, nil
+}
+
 func parseIntOrDash(field string) (int, error) {
 	if field == "-" {
 		return -1, nil
@@ -622,30 +697,88 @@ func (csc *cachingStorCli) Query(cID int) (Controller, error) {
 	return ctrl, err
 }
 
-func (csc *cachingStorCli) GetDiskType(path string) (disko.DiskType, error) {
+func (csc *cachingStorCli) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskType, error) {
 	ctrl, err := csc.Query(0)
-	if err == nil {
-		for _, vd := range ctrl.VirtDrives {
-			if vd.Path == path {
-				if ctrl.DriveGroups[vd.DriveGroup].IsSSD() {
-					return disko.SSD, nil
-				}
-
-				return disko.HDD, nil
-			}
+	if err != nil {
+		if isSoftStorCliErr(err) {
+			// Controller tool unavailable or no controller. Fall
+			// through with the sentinel so the caller uses udev.
+			return disko.Unknown, disko.ErrDiskTypeUndetermined
 		}
-	} else if err != ErrNoStorcli && err != ErrNoController && err != ErrUnsupported {
-		return disko.HDD, err
+		return disko.Unknown, err
 	}
 
-	return disko.HDD, fmt.Errorf("cannot determine disk type")
+	for _, vd := range ctrl.VirtDrives {
+		if vd.Path == path {
+			if ctrl.DriveGroups[vd.DriveGroup].IsSSD() {
+				return disko.SSD, nil
+			}
+
+			return disko.HDD, nil
+		}
+	}
+
+	// No VD matched path. Try JBOD/passthrough by matching udev serial
+	// against Drive.SerialNumber; fall through with the sentinel on any
+	// failure.
+	if dType, ok := jbodDiskTypeFromSerial(ctrl, udInfo); ok {
+		return dType, nil
+	}
+
+	return disko.Unknown, disko.ErrDiskTypeUndetermined
+}
+
+// isSoftStorCliErr returns true when err indicates that storcli simply
+// cannot answer right now (binary missing, no controller present, or an
+// unsupported controller). Callers should fall back to generic detection
+// rather than treat these as fatal.
+func isSoftStorCliErr(err error) bool {
+	return errors.Is(err, ErrNoStorcli) ||
+		errors.Is(err, ErrNoController) ||
+		errors.Is(err, ErrUnsupported)
+}
+
+// jbodDiskTypeFromSerial matches a udev serial against Drive.SerialNumber
+// across the controller's Drives. Returns ok=false on missing udev serial,
+// no match, collision, or unknown media.
+func jbodDiskTypeFromSerial(ctrl Controller, udInfo disko.UdevInfo) (disko.DiskType, bool) {
+	serials := udInfo.CollectSerials()
+	if len(serials) == 0 {
+		return disko.Unknown, false
+	}
+
+	var matches []*Drive
+	for _, d := range ctrl.Drives {
+		if d == nil {
+			continue
+		}
+		sn := strings.TrimSpace(d.SerialNumber)
+		if sn == "" {
+			continue
+		}
+		if _, ok := serials[sn]; ok {
+			matches = append(matches, d)
+		}
+	}
+
+	if len(matches) != 1 {
+		return disko.Unknown, false
+	}
+
+	switch matches[0].MediaType {
+	case SSD:
+		return disko.SSD, true
+	case HDD:
+		return disko.HDD, true
+	case NVME:
+		return disko.NVME, true
+	case UnknownMedia:
+		return disko.Unknown, false
+	}
+
+	return disko.Unknown, false
 }
 
 func (csc *cachingStorCli) DriverSysfsPath() string {
 	return csc.mr.DriverSysfsPath()
-}
-
-// not implemented in the driver layer
-func (csc *cachingStorCli) IsSysPathRAID(syspath string) bool {
-	return false
 }

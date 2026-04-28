@@ -2,9 +2,18 @@ package megaraid
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/patrickmn/go-cache"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"machinerun.io/disko"
 )
 
 var tableData1 = `
@@ -204,7 +213,7 @@ func TestNewController(t *testing.T) {
 	var exVlen, exPlen, exDGlen = 5, 5, 5
 	var cID = 0
 
-	ctrl, err := newController(cID, sys0CxShow, sys0CxVallShowAll)
+	ctrl, err := newController(cID, sys0CxShow, sys0CxVallShowAll, "")
 	if err != nil {
 		t.Fatalf("newController failed: %s", err)
 	}
@@ -1163,6 +1172,211 @@ SCSI NAA Id = 6cc167e9730322c027dd6c90047c42a1
 Unmap Enabled = No
 `
 
+// Cisco 12G Modular Raid Controller with all JBOD drives and no virtual drives.
+// Captured from a real system running megaraid_sas with
+// FW 5.190.00-3697. All five disks are in JBOD mode (1 SSD + 4 HDD).
+var ciscoJBODCxShow = `
+Generating detailed summary of the adapter, it may take a while to complete.
+
+CLI Version = 007.1907.0000.0000 Sep 13, 2021
+Operating system = Linux 6.6.0
+Controller = 0
+Status = Success
+Description = None
+
+Product Name = Cisco 12G Modular Raid Controller with 2GB cache (max 16 drives)
+Serial Number = SKXXXXXXXX
+SAS Address =  0000000000000000
+PCI Address = 00:3c:00:00
+System Time = 04/18/2026 07:25:04
+Mfg. Date = 07/23/22
+Controller Time = 04/18/2026 07:24:48
+FW Package Build = 51.19.0-4532
+BIOS Version = 7.19.00.0_0x07130200
+FW Version = 5.190.00-3697
+Driver Name = megaraid_sas
+Driver Version = 07.725.01.00-rc1
+Current Personality = RAID-Mode
+Vendor Id = 0x1000
+Device Id = 0x14
+SubVendor Id = 0x1137
+SubDevice Id = 0x20E
+Host Interface = PCI-E
+Device Interface = SAS-12G
+Bus Number = 60
+Device Number = 0
+Function Number = 0
+Domain ID = 0
+Security Protocol = None
+JBOD Drives = 5
+
+JBOD LIST :
+=========
+
+------------------------------------------------------------------------------
+EID:Slt DID State DG       Size Intf Med SED PI SeSz Model            Sp Type
+------------------------------------------------------------------------------
+134:2     1 JBOD  -  745.211 GB SAS  SSD N   N  512B KPM6XVUG800G     U  -
+134:3     0 JBOD  -    2.182 TB SAS  HDD N   N  4 KB AL15SEB24EP      U  -
+134:4     3 JBOD  -    2.182 TB SAS  HDD N   N  4 KB AL15SEB24EP      U  -
+134:5     2 JBOD  -    2.182 TB SAS  HDD N   N  4 KB AL15SEB24EP      U  -
+134:6     4 JBOD  -    2.182 TB SAS  HDD N   N  4 KB AL15SEB24EP      U  -
+------------------------------------------------------------------------------
+
+ID=JBOD Target ID|EID=Enclosure Device ID|Slt=Slot No|DID=Device ID|Onln=Online
+Offln=Offline|Intf=Interface|Med=Media Type|SeSz=Sector Size
+SED=Self Encryptive Drive|PI=Protection Info|Sp=Spun|U=Up|D=Down
+
+Physical Drives = 5
+
+PD LIST :
+=======
+
+------------------------------------------------------------------------------
+EID:Slt DID State DG       Size Intf Med SED PI SeSz Model            Sp Type
+------------------------------------------------------------------------------
+134:2     1 JBOD  -  745.211 GB SAS  SSD N   N  512B KPM6XVUG800G     U  -
+134:3     0 JBOD  -    2.182 TB SAS  HDD N   N  4 KB AL15SEB24EP      U  -
+134:4     3 JBOD  -    2.182 TB SAS  HDD N   N  4 KB AL15SEB24EP      U  -
+134:5     2 JBOD  -    2.182 TB SAS  HDD N   N  4 KB AL15SEB24EP      U  -
+134:6     4 JBOD  -    2.182 TB SAS  HDD N   N  4 KB AL15SEB24EP      U  -
+------------------------------------------------------------------------------
+
+EID=Enclosure Device ID|Slt=Slot No|DID=Device ID|DG=DriveGroup
+DHS=Dedicated Hot Spare|UGood=Unconfigured Good|GHS=Global Hotspare
+UBad=Unconfigured Bad|Sntze=Sanitize|Onln=Online|Offln=Offline|Intf=Interface
+Med=Media Type|SED=Self Encryptive Drive|PI=Protection Info
+SeSz=Sector Size|Sp=Spun|U=Up|D=Down|T=Transition|F=Foreign
+UGUnsp=UGood Unsupported|UGShld=UGood shielded|HSPShld=Hotspare shielded
+CFShld=Configured shielded|Cpybck=CopyBack|CBShld=Copyback Shielded
+UBUnsp=UBad Unsupported|Rbld=Rebuild
+
+Enclosures = 1
+
+Enclosure LIST :
+==============
+
+------------------------------------------------------------------------
+EID State Slots PD PS Fans TSs Alms SIM Port# ProdID     VendorSpecific
+------------------------------------------------------------------------
+134 OK       16  5  0    0   0    0   0 -     VirtualSES
+------------------------------------------------------------------------
+
+EID=Enclosure Device ID | PD=Physical drive count | PS=Power Supply count
+TSs=Temperature sensor count | Alms=Alarm count | SIM=SIM Count | ProdID=Product ID
+
+
+Cachevault_Info :
+===============
+
+------------------------------------
+Model  State   Temp Mode MfgDate
+------------------------------------
+CVPM05 Optimal 25C  -    2022/05/21
+------------------------------------
+
+`
+
+var ciscoJBODCxVallShowAll = `
+CLI Version = 007.1907.0000.0000 Sep 13, 2021
+Operating system = Linux 6.6.0
+Controller = 0
+Status = Success
+Description = No VD's have been configured.
+`
+
+// Output of 'storcli /c0/eall/sall show all' for the same JBOD setup.
+// Abridged: per drive we keep the summary row and the Device attributes
+// sub-section that carries "SN = ...". Serial numbers are synthetic
+// (SNTEST00N) so this fixture contains no data from real systems.
+var ciscoJBODCxEallSallShowAll = `
+CLI Version = 007.1907.0000.0000 Sep 13, 2021
+Operating system = Linux 6.6.0
+Controller = 0
+Status = Success
+Description = Show Drive Information Succeeded.
+
+
+Drive /c0/e134/s2 :
+=================
+
+------------------------------------------------------------------------------
+EID:Slt DID State DG       Size Intf Med SED PI SeSz Model            Sp Type
+------------------------------------------------------------------------------
+134:2     1 JBOD  -  372.611 GB SAS  SSD N   N  512B TESTMODELSSD1    U  -
+------------------------------------------------------------------------------
+
+
+Drive /c0/e134/s2 Device attributes :
+===================================
+SN = SNTEST001
+Model Number = TESTMODELSSD1
+
+
+Drive /c0/e134/s3 :
+=================
+
+----------------------------------------------------------------------------
+EID:Slt DID State DG     Size Intf Med SED PI SeSz Model            Sp Type
+----------------------------------------------------------------------------
+134:3     0 JBOD  -  2.182 TB SAS  HDD N   N  4 KB TESTMODELHDD1    U  -
+----------------------------------------------------------------------------
+
+
+Drive /c0/e134/s3 Device attributes :
+===================================
+SN = SNTEST002
+Model Number = TESTMODELHDD1
+
+
+Drive /c0/e134/s4 :
+=================
+
+----------------------------------------------------------------------------
+EID:Slt DID State DG     Size Intf Med SED PI SeSz Model            Sp Type
+----------------------------------------------------------------------------
+134:4     3 JBOD  -  2.182 TB SAS  HDD N   N  4 KB TESTMODELHDD1    U  -
+----------------------------------------------------------------------------
+
+
+Drive /c0/e134/s4 Device attributes :
+===================================
+SN = SNTEST003
+Model Number = TESTMODELHDD1
+
+
+Drive /c0/e134/s5 :
+=================
+
+----------------------------------------------------------------------------
+EID:Slt DID State DG     Size Intf Med SED PI SeSz Model            Sp Type
+----------------------------------------------------------------------------
+134:5     2 JBOD  -  2.182 TB SAS  HDD N   N  4 KB TESTMODELHDD1    U  -
+----------------------------------------------------------------------------
+
+
+Drive /c0/e134/s5 Device attributes :
+===================================
+SN = SNTEST004
+Model Number = TESTMODELHDD1
+
+
+Drive /c0/e134/s6 :
+=================
+
+----------------------------------------------------------------------------
+EID:Slt DID State DG     Size Intf Med SED PI SeSz Model            Sp Type
+----------------------------------------------------------------------------
+134:6     4 JBOD  -  2.182 TB SAS  HDD N   N  4 KB TESTMODELHDD1    U  -
+----------------------------------------------------------------------------
+
+
+Drive /c0/e134/s6 Device attributes :
+===================================
+SN = SNTEST005
+Model Number = TESTMODELHDD1
+`
+
 // this has a 'F' for a DriveGroup (foreign)
 // it is put together from old '/c0/dall show' output to
 // look like '/c0 show all' would.
@@ -1289,3 +1503,260 @@ Model  State   Temp Mode MfgDate
 CVPM05 Optimal 34C  -    2018/10/16
 ------------------------------------
 `
+
+func TestParseCxShowCiscoJBOD(t *testing.T) {
+	vds, pds, err := parseCxShow(ciscoJBODCxShow)
+	require.NoError(t, err, "parseCxShow(ciscoJBODCxShow)")
+
+	assert.Empty(t, vds, "virtual drives")
+	require.Len(t, pds, 5, "physical drives")
+
+	for _, pd := range pds {
+		assert.Equal(t, "JBOD", pd.State, "drive %d: State", pd.ID)
+		assert.Equal(t, -1, pd.DriveGroup, "drive %d: DriveGroup (JBOD)", pd.ID)
+	}
+
+	assert.Equal(t, SSD, pds[1].MediaType, "drive 1 (slot 2)")
+	assert.Equal(t, HDD, pds[0].MediaType, "drive 0 (slot 3)")
+}
+
+func TestParseVirtPropertiesCiscoJBOD(t *testing.T) {
+	propMap, err := parseVirtProperties(ciscoJBODCxVallShowAll)
+	require.NoError(t, err, "parseVirtProperties(ciscoJBODCxVallShowAll)")
+	assert.Empty(t, propMap, "VD properties")
+}
+
+func TestNewControllerCiscoJBOD(t *testing.T) {
+	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll,
+		ciscoJBODCxEallSallShowAll)
+	require.NoError(t, err, "newController")
+
+	assert.Equal(t, 0, ctrl.ID, "controller ID")
+	assert.Empty(t, ctrl.VirtDrives, "VirtDrives")
+	assert.Len(t, ctrl.Drives, 5, "Drives")
+	assert.Empty(t, ctrl.DriveGroups, "DriveGroups (JBOD has no drive groups)")
+
+	// Drives indexed by DID. Slot 2 is the SSD (DID=1); slot 3 is HDD (DID=0).
+	wantSerials := map[int]string{
+		1: "SNTEST001", // 134:2 SSD
+		0: "SNTEST002", // 134:3 HDD
+		3: "SNTEST003", // 134:4
+		2: "SNTEST004", // 134:5
+		4: "SNTEST005", // 134:6
+	}
+	for did, want := range wantSerials {
+		d := ctrl.Drives[did]
+		require.NotNil(t, d, "drive DID=%d missing", did)
+		assert.Equal(t, want, d.SerialNumber, "drive DID=%d: SerialNumber", did)
+	}
+}
+
+func TestParseDriveSerialsCiscoJBOD(t *testing.T) {
+	got, err := parseDriveSerials(ciscoJBODCxEallSallShowAll)
+	require.NoError(t, err, "parseDriveSerials")
+
+	want := map[driveKey]string{
+		{EID: 134, Slot: 2}: "SNTEST001",
+		{EID: 134, Slot: 3}: "SNTEST002",
+		{EID: 134, Slot: 4}: "SNTEST003",
+		{EID: 134, Slot: 5}: "SNTEST004",
+		{EID: 134, Slot: 6}: "SNTEST005",
+	}
+	assert.Equal(t, want, got, "parseDriveSerials")
+}
+
+func TestParseDriveSerialsEmpty(t *testing.T) {
+	got, err := parseDriveSerials("")
+	require.NoError(t, err, `parseDriveSerials("")`)
+	assert.Empty(t, got, "expected empty map")
+}
+
+type mockMegaRaid struct {
+	ctrl Controller
+	err  error
+}
+
+func (m *mockMegaRaid) Query(cID int) (Controller, error) {
+	return m.ctrl, m.err
+}
+
+func (m *mockMegaRaid) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskType, error) {
+	return disko.HDD, nil
+}
+
+func (m *mockMegaRaid) DriverSysfsPath() string {
+	return "/sys/bus/pci/drivers/megaraid_sas"
+}
+
+func TestGetDiskTypeJBODReturnsErrDiskTypeUndetermined(t *testing.T) {
+	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll,
+		ciscoJBODCxEallSallShowAll)
+	require.NoError(t, err, "newController")
+
+	csc := &cachingStorCli{
+		mr:    &mockMegaRaid{ctrl: ctrl, err: nil},
+		cache: cache.New(5*time.Minute, 5*time.Minute),
+	}
+
+	// No udev serial => JBOD matching fails => sentinel for udev fallback.
+	for _, path := range []string{"/dev/sda", "/dev/sdb", "/dev/sdc"} {
+		dtype, err := csc.GetDiskType(path, disko.UdevInfo{})
+		assert.ErrorIs(t, err, disko.ErrDiskTypeUndetermined,
+			"GetDiskType(%q): expected ErrDiskTypeUndetermined", path)
+		assert.Equal(t, disko.Unknown, dtype,
+			"GetDiskType(%q): expected disko.Unknown placeholder", path)
+	}
+}
+
+// A soft storcli failure (missing binary / no controller / unsupported)
+// should return the sentinel so the caller falls back to udev.
+func TestGetDiskTypeSoftQueryFailureReturnsSentinel(t *testing.T) {
+	csc := &cachingStorCli{
+		mr:    &mockMegaRaid{ctrl: Controller{}, err: ErrNoStorcli},
+		cache: cache.New(5*time.Minute, 5*time.Minute),
+	}
+
+	_, err := csc.GetDiskType("/dev/sda", disko.UdevInfo{})
+	assert.ErrorIs(t, err, disko.ErrDiskTypeUndetermined,
+		"expected ErrDiskTypeUndetermined on soft storcli failure")
+}
+
+// A hard storcli error must propagate unchanged (it is not the sentinel).
+func TestGetDiskTypeHardQueryFailurePropagates(t *testing.T) {
+	hardErr := fmt.Errorf("storcli exploded")
+	csc := &cachingStorCli{
+		mr:    &mockMegaRaid{ctrl: Controller{}, err: hardErr},
+		cache: cache.New(5*time.Minute, 5*time.Minute),
+	}
+
+	_, err := csc.GetDiskType("/dev/sda", disko.UdevInfo{})
+	assert.NotErrorIs(t, err, disko.ErrDiskTypeUndetermined,
+		"hard storcli error should NOT be treated as the sentinel")
+	assert.Error(t, err, "hard storcli error must propagate")
+}
+
+// newJBODCachingStorCli wires the Cisco JBOD fixture (with serials from
+// the /eall/sall query) to a cachingStorCli for serial-based matching.
+func newJBODCachingStorCli(t *testing.T) *cachingStorCli {
+	t.Helper()
+
+	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll,
+		ciscoJBODCxEallSallShowAll)
+	require.NoError(t, err, "newController")
+
+	return &cachingStorCli{
+		mr:    &mockMegaRaid{ctrl: ctrl, err: nil},
+		cache: cache.New(5*time.Minute, 5*time.Minute),
+	}
+}
+
+// SSD serial (slot 2) resolves via ID_SERIAL_SHORT.
+func TestGetDiskTypeJBODSerialMatchSSD(t *testing.T) {
+	csc := newJBODCachingStorCli(t)
+
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SERIAL_SHORT": "SNTEST001"},
+	}
+	dtype, err := csc.GetDiskType("/dev/sdb", ud)
+	require.NoError(t, err, "expected nil err for SSD JBOD match")
+	assert.Equal(t, disko.SSD, dtype, "GetDiskType")
+}
+
+// HDD serial (slot 3) resolves via ID_SERIAL_SHORT.
+func TestGetDiskTypeJBODSerialMatchHDD(t *testing.T) {
+	csc := newJBODCachingStorCli(t)
+
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SERIAL_SHORT": "SNTEST002"},
+	}
+	dtype, err := csc.GetDiskType("/dev/sdb", ud)
+	require.NoError(t, err, "expected nil err for HDD JBOD match")
+	assert.Equal(t, disko.HDD, dtype, "GetDiskType")
+}
+
+// ID_SERIAL alone (no ID_SERIAL_SHORT) still matches when it equals the SN.
+func TestGetDiskTypeJBODSerialViaIDSerialFallback(t *testing.T) {
+	csc := newJBODCachingStorCli(t)
+
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SERIAL": "SNTEST001"},
+	}
+	dtype, err := csc.GetDiskType("/dev/sdb", ud)
+	require.NoError(t, err, "expected nil err for ID_SERIAL fallback match")
+	assert.Equal(t, disko.SSD, dtype, "GetDiskType")
+}
+
+func TestGetDiskTypeJBODSerialViaIDSCSISerial(t *testing.T) {
+	csc := newJBODCachingStorCli(t)
+
+	ud := disko.UdevInfo{
+		Properties: map[string]string{
+			"ID_SCSI_SERIAL":  "SNTEST001",
+			"ID_SERIAL_SHORT": "deadbeefcafef001",
+			"ID_SERIAL":       "3deadbeefcafef001",
+		},
+	}
+	dtype, err := csc.GetDiskType("/dev/sdb", ud)
+	require.NoError(t, err, "expected nil err for ID_SCSI_SERIAL match")
+	assert.Equal(t, disko.SSD, dtype, "GetDiskType")
+}
+
+// Serial not in fixture falls through to ErrDiskTypeUndetermined.
+func TestGetDiskTypeJBODSerialNoMatch(t *testing.T) {
+	csc := newJBODCachingStorCli(t)
+
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SERIAL_SHORT": "NOSUCHSERIAL"},
+	}
+	_, err := csc.GetDiskType("/dev/sdb", ud)
+	assert.ErrorIs(t, err, disko.ErrDiskTypeUndetermined,
+		"expected ErrDiskTypeUndetermined for unknown serial")
+}
+
+// When the /eall/sall detail query was unavailable (empty string), drives
+// carry no SerialNumber and JBOD matching correctly fails over to udev.
+func TestGetDiskTypeJBODEmptyDetailOutputFallsThrough(t *testing.T) {
+	ctrl, err := newController(0, ciscoJBODCxShow, ciscoJBODCxVallShowAll, "")
+	require.NoError(t, err, "newController")
+
+	csc := &cachingStorCli{
+		mr:    &mockMegaRaid{ctrl: ctrl, err: nil},
+		cache: cache.New(5*time.Minute, 5*time.Minute),
+	}
+
+	ud := disko.UdevInfo{
+		Properties: map[string]string{"ID_SERIAL_SHORT": "SNTEST001"},
+	}
+	_, err = csc.GetDiskType("/dev/sdb", ud)
+	assert.ErrorIs(t, err, disko.ErrDiskTypeUndetermined,
+		"expected ErrDiskTypeUndetermined with no serials")
+}
+
+// isSoftStorCliErr must recognise the three soft sentinels whether bare
+// or wrapped with fmt.Errorf("%w").
+func TestIsSoftStorCliErr(t *testing.T) {
+	hard := errors.New("storcli blew up")
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"bare ErrNoStorcli", ErrNoStorcli, true},
+		{"bare ErrNoController", ErrNoController, true},
+		{"bare ErrUnsupported", ErrUnsupported, true},
+		{"wrapped ErrNoStorcli", fmt.Errorf("ctx: %w", ErrNoStorcli), true},
+		{"wrapped ErrNoController", fmt.Errorf("ctx: %w", ErrNoController), true},
+		{"wrapped ErrUnsupported", fmt.Errorf("ctx: %w", ErrUnsupported), true},
+		{"unrelated hard error", hard, false},
+		{"wrapped hard error", fmt.Errorf("ctx: %w", hard), false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isSoftStorCliErr(tc.err),
+				"isSoftStorCliErr(%v)", tc.err)
+		})
+	}
+}

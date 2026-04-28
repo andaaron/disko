@@ -11,6 +11,7 @@ import (
 
 	"github.com/pkg/errors"
 	"machinerun.io/disko"
+	"machinerun.io/disko/linux/sysfs"
 )
 
 // parse JSON from 'storcli2 show nolog J' for List() method
@@ -520,11 +521,18 @@ func getCommandErrorRCDefault(err error, rcError int) int {
 
 // Implement the mpi3mr Interface with storcli2
 type storCli2 struct {
+	// sysRoot: sysfs root for JBOD SCSI-target lookups ("/sys" in prod).
+	sysRoot string
+	// scsiTargetFn: kname -> SCSI target ID. Overridable for tests.
+	scsiTargetFn func(sysRoot, kname string) (int, bool, error)
 }
 
 // StorCli returns a storcli2 specific implementation of Query for the Mpi3mr interface
 func StorCli2() Mpi3mr {
-	return &storCli2{}
+	return &storCli2{
+		sysRoot:      "/sys",
+		scsiTargetFn: sysfs.ReadSCSITarget,
+	}
 }
 
 const (
@@ -596,38 +604,112 @@ func (sc *storCli2) DriverSysfsPath() string {
 	return SysfsPCIDriversPath
 }
 
-func (sc *storCli2) GetDiskType(path string) (disko.DiskType, error) {
+func (sc *storCli2) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskType, error) {
 	cIDs, err := sc.List()
 	if err != nil {
-		return disko.HDD, errors.Errorf("failed to get controller list: %s", err)
+		if isSoftStorCli2Err(err) {
+			return disko.Unknown, disko.ErrDiskTypeUndetermined
+		}
+		return disko.Unknown, errors.Errorf("failed to get controller list: %s", err)
 	}
 
-	errors := []error{}
+	var queryErrs []error
+	var queriedCtrls []Controller
+
 	for _, cID := range cIDs {
 		ctrl, err := sc.Query(cID)
 		if err != nil {
-			errors = append(errors, fmt.Errorf("error while getting config for controller id:%d %s", cID, err))
+			queryErrs = append(queryErrs, fmt.Errorf("controller id %d: %w", cID, err))
 			continue
 		}
+
+		queriedCtrls = append(queriedCtrls, ctrl)
+
 		for _, vDev := range ctrl.VirtualDrives {
-			if vDev.Path() == path && vDev.IsSSD() {
+			if vDev.Path() != path {
+				continue
+			}
+			if vDev.IsSSD() {
 				return disko.SSD, nil
 			}
-
 			return disko.HDD, nil
 		}
 	}
 
-	for _, err := range errors {
-		if err != ErrNoStor2cli && err != ErrNoController && err != ErrUnsupported {
-			return disko.HDD, err
+	for _, err := range queryErrs {
+		if !isSoftStorCli2Err(err) {
+			return disko.Unknown, err
 		}
 	}
 
-	return disko.HDD, fmt.Errorf("cannot determine diskt type for path %q", path)
+	// No VD matched path (or no controller responded). Try JBOD/
+	// passthrough by matching SCSI target against PhysicalDrive.PID;
+	// fall through with the sentinel so the caller uses udev.
+	if dType, ok := sc.jbodDiskTypeFromSCSI(queriedCtrls, udInfo); ok {
+		return dType, nil
+	}
+
+	return disko.Unknown, disko.ErrDiskTypeUndetermined
 }
 
-// not implemented in driver layer
-func (sc *storCli2) IsSysPathRAID(syspath string) bool {
-	return false
+// isSoftStorCli2Err returns true when err indicates that storcli2 simply
+// cannot answer right now (binary missing, no controller present, or an
+// unsupported controller). Callers should fall back to generic detection
+// rather than treat these as fatal.
+func isSoftStorCli2Err(err error) bool {
+	return errors.Is(err, ErrNoStor2cli) ||
+		errors.Is(err, ErrNoController) ||
+		errors.Is(err, ErrUnsupported)
+}
+
+// jbodDiskTypeFromSCSI matches the Linux SCSI Target field (the third
+// component of Host:Channel:Target:LUN read from
+// /sys/block/<kname>/device) against PhysicalDrive.PID across the given
+// controllers. Returns ok=false for non-SCSI devices (udev ID_SCSI != "1"),
+// missing kname, unresolved target, PID collision, or unknown medium.
+func (sc *storCli2) jbodDiskTypeFromSCSI(ctrls []Controller, udInfo disko.UdevInfo) (disko.DiskType, bool) {
+	if sc.scsiTargetFn == nil {
+		return disko.Unknown, false
+	}
+
+	// udev sets ID_SCSI=1 only for devices that present as SCSI on a
+	// host controller. virtio-blk, NVMe and ATA/SATA do not, so we can
+	// skip the sysfs lookup for them.
+	if udInfo.Properties["ID_SCSI"] != "1" {
+		return disko.Unknown, false
+	}
+
+	kname := udInfo.Name
+	if kname == "" {
+		return disko.Unknown, false
+	}
+
+	target, ok, err := sc.scsiTargetFn(sc.sysRoot, kname)
+	if err != nil || !ok {
+		return disko.Unknown, false
+	}
+
+	var matches []PhysicalDrive
+	for _, ctrl := range ctrls {
+		for _, pd := range ctrl.PhysicalDrives {
+			if pd.PID == target {
+				matches = append(matches, pd)
+			}
+		}
+	}
+
+	if len(matches) != 1 {
+		return disko.Unknown, false
+	}
+
+	switch strings.ToUpper(strings.TrimSpace(matches[0].Medium)) {
+	case "SSD":
+		return disko.SSD, true
+	case "HDD":
+		return disko.HDD, true
+	case "NVME":
+		return disko.NVME, true
+	}
+
+	return disko.Unknown, false
 }

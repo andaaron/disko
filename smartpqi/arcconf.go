@@ -2,6 +2,7 @@ package smartpqi
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -489,47 +490,107 @@ func (ac *arcConf) Query(cID int) (Controller, error) {
 	return Controller{}, fmt.Errorf("unknown controller id %d", cID)
 }
 
-func (ac *arcConf) GetDiskType(path string) (disko.DiskType, error) {
+func (ac *arcConf) GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskType, error) {
 	cIDs, err := ac.List()
 	if err != nil {
-		return disko.HDD, fmt.Errorf("failed to enumerate controllers: %s", err)
+		if isSoftArcconfErr(err) {
+			return disko.Unknown, disko.ErrDiskTypeUndetermined
+		}
+		return disko.Unknown, fmt.Errorf("failed to enumerate controllers: %w", err)
 	}
 
-	errors := []error{}
+	var queryErrs []error
+	var queriedCtrls []Controller
+
 	for _, cID := range cIDs {
 		ctrl, err := ac.GetConfig(cID)
 		if err != nil {
-			errors = append(errors, fmt.Errorf("error while getting config for controller id:%d: %s", cID, err))
+			queryErrs = append(queryErrs, fmt.Errorf("controller id %d: %w", cID, err))
 			continue
 		}
 
-		for _, lDrive := range ctrl.LogicalDrives {
-			if lDrive.DiskName == path {
-				if lDrive.IsSSD() {
-					return disko.SSD, nil
-				}
+		queriedCtrls = append(queriedCtrls, ctrl)
 
-				return disko.HDD, nil
+		for _, lDrive := range ctrl.LogicalDrives {
+			if lDrive.DiskName != path {
+				continue
+			}
+			if lDrive.IsSSD() {
+				return disko.SSD, nil
+			}
+			return disko.HDD, nil
+		}
+	}
+
+	for _, err := range queryErrs {
+		if !isSoftArcconfErr(err) {
+			return disko.Unknown, err
+		}
+	}
+
+	// No LD matched path (or no controller responded). Try JBOD by
+	// matching udev serial against PhysicalDevice SerialNumber; fall
+	// through with the sentinel so the caller uses udev.
+	if dType, ok := jbodDiskTypeFromSerial(queriedCtrls, udInfo); ok {
+		return dType, nil
+	}
+
+	return disko.Unknown, disko.ErrDiskTypeUndetermined
+}
+
+// isSoftArcconfErr returns true when err indicates that arcconf simply
+// cannot answer right now (binary missing, no controller present, or an
+// unsupported controller). Callers should fall back to generic detection
+// rather than treat these as fatal.
+func isSoftArcconfErr(err error) bool {
+	return errors.Is(err, ErrNoArcconf) ||
+		errors.Is(err, ErrNoController) ||
+		errors.Is(err, ErrUnsupported)
+}
+
+// jbodDiskTypeFromSerial matches a udev serial against PhysicalDevice
+// SerialNumber across the given controllers. Returns ok=false on missing
+// udev serial, no match, collision, or unknown media.
+func jbodDiskTypeFromSerial(ctrls []Controller, udInfo disko.UdevInfo) (disko.DiskType, bool) {
+	serials := udInfo.CollectSerials()
+	if len(serials) == 0 {
+		return disko.Unknown, false
+	}
+
+	var matches []*PhysicalDevice
+	for _, ctrl := range ctrls {
+		for _, pDev := range ctrl.PhysicalDrives {
+			if pDev == nil {
+				continue
+			}
+			pdSerial := strings.TrimSpace(pDev.SerialNumber)
+			if pdSerial == "" {
+				continue
+			}
+			if _, ok := serials[pdSerial]; ok {
+				matches = append(matches, pDev)
 			}
 		}
 	}
 
-	for _, err := range errors {
-		if err != ErrNoArcconf && err != ErrNoController && err != ErrUnsupported {
-			return disko.HDD, err
-		}
+	if len(matches) != 1 {
+		return disko.Unknown, false
 	}
 
-	return disko.HDD, fmt.Errorf("cannot determine disk type")
+	switch matches[0].Type {
+	case SSD:
+		return disko.SSD, true
+	case HDD:
+		return disko.HDD, true
+	case NVME:
+		return disko.NVME, true
+	}
+
+	return disko.Unknown, false
 }
 
 func (ac *arcConf) DriverSysfsPath() string {
 	return SysfsPCIDriversPath
-}
-
-// not implemented at the driver level
-func (ac *arcConf) IsSysPathRAID(path string) bool {
-	return false
 }
 
 func (ac *arcConf) GetConfig(cID int) (Controller, error) {

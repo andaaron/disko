@@ -68,13 +68,10 @@ type Mpi3mr interface {
 	Query(int) (Controller, error)
 
 	// GetDiskType - Determine the disk type if controller owns disk
-	GetDiskType(string) (disko.DiskType, error)
+	GetDiskType(path string, udInfo disko.UdevInfo) (disko.DiskType, error)
 
 	// DriverSysfsPath - Return the sysfs path to the linux driver for this controller
 	DriverSysfsPath() string
-
-	// IsSysPathRAID - Check if sysfs path is a device on the controller
-	IsSysPathRAID(string) bool
 }
 
 // ErrNoController - Error reported by Query if no controller is found.

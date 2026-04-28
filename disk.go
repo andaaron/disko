@@ -2,12 +2,21 @@ package disko
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"machinerun.io/disko/partid"
 )
+
+// ErrDiskTypeUndetermined is returned by RAIDController.GetDiskType when
+// the controller layer cannot determine the disk type. Typical cases:
+// the device is on the controller's sysfs tree but is not a configured
+// virtual/logical drive and cannot be matched as a JBOD/passthrough
+// disk, or controller queries were inconclusive (e.g. controller tool
+// unavailable). Callers should fall back to generic udev-based detection.
+var ErrDiskTypeUndetermined = errors.New("RAID controller could not determine disk type")
 
 // DiskType enumerates supported disk types.
 type DiskType int
@@ -24,19 +33,28 @@ const (
 
 	// TYPEFILE - A file on disk, not a block device.
 	TYPEFILE
+
+	// Unknown is an internal disko placeholder returned alongside a
+	// non-nil error by RAID-controller drivers when they cannot classify
+	// a device. It MUST NOT leak out of disko onto disko.Disk.Type: the
+	// linux system layer either consumes it via udev fallback or
+	// propagates the accompanying error. External callers should never
+	// observe this value.
+	Unknown
 )
 
 func (t DiskType) String() string {
-	return []string{"HDD", "SSD", "NVME", "FILE"}[t]
+	return []string{"HDD", "SSD", "NVME", "FILE", "UNKNOWN"}[t]
 }
 
 // StringToDiskType - convert a string to a disk type.
 func StringToDiskType(typeStr string) DiskType {
 	kmap := map[string]DiskType{
-		"HDD":  HDD,
-		"SSD":  SSD,
-		"NVME": NVME,
-		"FILE": TYPEFILE,
+		"HDD":     HDD,
+		"SSD":     SSD,
+		"NVME":    NVME,
+		"FILE":    TYPEFILE,
+		"UNKNOWN": Unknown,
 	}
 	if dtype, ok := kmap[typeStr]; ok {
 		return dtype
@@ -483,6 +501,30 @@ type UdevInfo struct {
 
 	// Properties is udev information as a map of key, value pairs.
 	Properties map[string]string `json:"properties"`
+}
+
+// CollectSerials returns the set of udev serial-style tokens that
+// identify this device. Used by RAID drivers (megaraid, smartpqi) to
+// correlate a Linux device with a controller-reported physical drive
+// serial number.
+//
+// Controllers typically expose the SCSI INQUIRY page-80 serial, which
+// udev surfaces as ID_SCSI_SERIAL on SCSI-class devices and is the
+// primary key. ID_SERIAL_SHORT and ID_SERIAL are WWN-derived on most
+// SAS/SATA drives but cover drives that don't expose a distinct VPD
+// page-80 serial. All non-empty values are returned so callers can match
+// any of them against a controller record.
+func (u UdevInfo) CollectSerials() map[string]struct{} {
+	out := map[string]struct{}{}
+
+	for _, key := range []string{"ID_SCSI_SERIAL", "ID_SERIAL_SHORT", "ID_SERIAL"} {
+		v := strings.TrimSpace(u.Properties[key])
+		if v != "" {
+			out[v] = struct{}{}
+		}
+	}
+
+	return out
 }
 
 // PartitionSet is a map of partition number to the partition.
